@@ -12,7 +12,7 @@ const childEnvironment = {
   NEXT_PUBLIC_LUME_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`,
 };
 const children = [
-  spawn(process.execPath, [resolve(webRoot, "scripts/local-bridge.mjs")], {
+  spawn(process.execPath, ["--watch", resolve(webRoot, "scripts/local-bridge.mjs")], {
     cwd: webRoot,
     env: childEnvironment,
     stdio: "inherit",
