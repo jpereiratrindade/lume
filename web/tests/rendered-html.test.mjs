@@ -18,6 +18,8 @@ test("server-renders the Lume presence surface", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>Lume — seu contexto, presente<\/title>/i);
+  assert.match(html, /<p class="eyebrow">Hoje<\/p>/);
+  assert.match(html, /<h1 id="greeting">Olá\.<\/h1>/);
   assert.match(html, /O que está acontecendo agora\?/);
   assert.match(html, /Pode falar do teu jeito/);
   assert.match(html, /Seu contexto fica com você/);

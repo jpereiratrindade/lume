@@ -87,7 +87,7 @@ lume::TimePoint now() {
 
 void conversation(lume::Assistant& assistant) {
     auto outcome = assistant.observe(now());
-    bool awaiting_reply = outcome.decision == "INTERACT";
+    bool awaiting_reply = outcome.decision == "INTERACT" || outcome.decision == "CLARIFY";
     if (awaiting_reply) std::cout << "Lume: " << outcome.message << '\n';
     else std::cout << "Lume: Estou aqui. O que está acontecendo agora?\n";
     std::cout << "      (/sair, /observar, /porquê, /inspecionar)\n";
@@ -106,7 +106,7 @@ void conversation(lume::Assistant& assistant) {
         if (line == "/observar") outcome = assistant.observe(now());
         else if (awaiting_reply) outcome = assistant.reply(line, now());
         else outcome = assistant.say(line, now());
-        awaiting_reply = outcome.decision == "INTERACT";
+        awaiting_reply = outcome.decision == "INTERACT" || outcome.decision == "CLARIFY";
         if (!outcome.message.empty()) std::cout << "Lume: " << outcome.message << '\n';
         else if (outcome.decision == "NO_INTERACTION") std::cout << "Lume permanece em silêncio.\n";
     }

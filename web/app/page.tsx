@@ -47,6 +47,10 @@ function canUseLocalBridge() {
   return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 }
 
+function outcomeAwaitsReply(outcome: LumeOutcome) {
+  return outcome.decision === "INTERACT" || outcome.decision === "CLARIFY";
+}
+
 function humanDate(date: Date) {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "long",
@@ -91,7 +95,7 @@ export default function Home() {
   const [awaitingReply, setAwaitingReply] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState<Date | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const nextId = useRef(1);
 
@@ -113,6 +117,7 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    const initialClock = window.setTimeout(() => setNow(new Date()), 0);
     async function connect() {
       if (!canUseLocalBridge()) {
         setConnection("preview");
@@ -130,7 +135,7 @@ export default function Home() {
           const result = (await observation.json()) as LumeOutcome;
           if (result.message && result.message !== "NO_INTERACTION") {
             setMessages([{ id: nextId.current++, role: "lume", text: result.message, reason: result.reason }]);
-            setAwaitingReply(result.decision === "INTERACT");
+            setAwaitingReply(outcomeAwaitsReply(result));
           }
         }
       } catch {
@@ -141,6 +146,7 @@ export default function Home() {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
     return () => {
       active = false;
+      window.clearTimeout(initialClock);
       window.clearInterval(timer);
     };
   }, []);
@@ -159,7 +165,7 @@ export default function Home() {
     if (!response.ok) throw new Error("local runtime unavailable");
     const result = (await response.json()) as LumeOutcome;
     if (result.message) append("lume", result.message, result.reason);
-    setAwaitingReply(result.decision === "INTERACT");
+    setAwaitingReply(outcomeAwaitsReply(result));
     await refreshContext();
   }
 
@@ -173,7 +179,7 @@ export default function Home() {
         "Certo. Amanhã de manhã eu trago isso de volta.",
         "Você expressou uma intenção para amanhã de manhã. Nesta prévia, o estado vive apenas durante a sessão.",
       );
-      const tomorrow = new Date(now);
+      const tomorrow = new Date(now ?? new Date());
       tomorrow.setDate(tomorrow.getDate() + 1);
       tomorrow.setHours(6, 0, 0, 0);
       setIntentions((current) => [
@@ -250,6 +256,8 @@ export default function Home() {
 
   const lastReason = [...messages].reverse().find((item) => item.role === "lume" && item.reason);
   const hasConversation = messages.length > 0;
+  const today = now ? humanDate(now) : "Hoje";
+  const welcome = now ? greeting(now) : "Olá.";
 
   function returnHome() {
     setMessages([]);
@@ -274,8 +282,8 @@ export default function Home() {
       {!hasConversation ? (
         <section className="presence-stage" aria-labelledby="greeting">
           <div className="ambient-glow" aria-hidden="true" />
-          <p className="eyebrow">{humanDate(now)}</p>
-          <h1 id="greeting">{greeting(now)}</h1>
+          <p className="eyebrow">{today}</p>
+          <h1 id="greeting">{welcome}</h1>
           <p className="opening">O que está acontecendo agora?</p>
           <Composer
             draft={draft}
@@ -302,7 +310,7 @@ export default function Home() {
       ) : (
         <section className="conversation-stage" aria-label="Conversa com Lume">
           <div className="conversation-heading">
-            <p>{humanDate(now)}</p>
+            <p>{today}</p>
             <h1>Estou aqui.</h1>
           </div>
           <div className="messages" aria-live="polite">

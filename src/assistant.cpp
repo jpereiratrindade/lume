@@ -185,24 +185,44 @@ Outcome Assistant::reply(std::string_view response, TimePoint now) {
         return {"COMPLETED", "Certo. Marco isso como resolvido.",
                 "você informou que a intenção foi concluída", true};
     }
-    if (normalized.find("nao precisa") != std::string::npos || normalized == "descarta") {
+    if (normalized == "nao" || normalized.find("nao precisa") != std::string::npos ||
+        normalized == "descarta") {
         target->status = IntentionStatus::dismissed;
         store_.save(state);
         return {"DISMISSED", "Tudo bem. Não vou trazer isso de volta.",
                 "você retirou explicitamente a intenção", true};
     }
     if (normalized == "agora nao" || normalized == "nao agora") {
-        target->window_start = now + std::chrono::hours{2};
-        target->window_end = target->window_start + std::chrono::hours{2};
-        target->precision = "assistant-default-deferral";
-        target->last_interaction_at.reset();
+        target->last_interaction_at = now;
+        const auto reason = "você recusou este momento sem definir outro";
+        const auto message = "Tudo bem. Quando você quer que eu traga isso de volta?";
+        state.interactions.push_back(Interaction{
+            .id = state.next_id++,
+            .intention_id = target->id,
+            .created_at = now,
+            .message = message,
+            .reason = reason,
+            .decision = "CLARIFY",
+            .formulation_source = "core",
+        });
         store_.save(state);
-        return {"DEFER", "Tudo bem.", "você pediu para não retomar agora", true};
+        return {"CLARIFY", message, reason, true};
     }
 
+    target->last_interaction_at = now;
+    const auto reason = "a resposta não determina se a intenção deve começar, ser adiada ou encerrada";
+    const auto message = "Não ficou claro se você quer fazer isso agora, adiar ou encerrar. O que prefere?";
+    state.interactions.push_back(Interaction{
+        .id = state.next_id++,
+        .intention_id = target->id,
+        .created_at = now,
+        .message = message,
+        .reason = reason,
+        .decision = "CLARIFY",
+        .formulation_source = "core",
+    });
     store_.save(state);
-    return {"REMEMBERED", "Entendi. Preservei tua resposta sem presumir uma decisão.",
-            "a resposta não autoriza uma mudança inequívoca no estado da intenção", true};
+    return {"CLARIFY", message, reason, true};
 }
 
 std::string Assistant::explain_last() const {

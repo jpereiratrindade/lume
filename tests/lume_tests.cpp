@@ -119,6 +119,34 @@ void empty_state_file_test(const std::filesystem::path& path) {
            "initialized state should preserve the expression");
 }
 
+void ambiguous_reply_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
+    assistant.observe(at("2026-09-22T09:00:00"));
+
+    const auto ambiguous = assistant.reply("Talvez mais tarde.", at("2026-09-22T09:01:00"));
+    expect(ambiguous.decision == "CLARIFY", "ambiguous replies should request clarification");
+    expect(ambiguous.message.find("adiar") != std::string::npos,
+           "clarification should present an explicit deferral choice");
+    expect(assistant.reply("Daqui a uma hora.", at("2026-09-22T09:02:00")).decision == "DEFER",
+           "clarification must keep the intention available for a precise reply");
+}
+
+void unspecified_deferral_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
+    assistant.observe(at("2026-09-22T09:00:00"));
+    const auto before = lume::Store{path}.load().intentions.front();
+
+    const auto outcome = assistant.reply("Agora não.", at("2026-09-22T09:01:00"));
+    const auto after = lume::Store{path}.load().intentions.front();
+    expect(outcome.decision == "CLARIFY", "unspecified deferral should request a time");
+    expect(after.window_start == before.window_start && after.window_end == before.window_end,
+           "the core must not invent a deferral window");
+    expect(assistant.reply("Daqui a uma hora.", at("2026-09-22T09:02:00")).decision == "DEFER",
+           "a precise follow-up should complete the deferral");
+}
+
 }  // namespace
 
 int main() {
@@ -132,6 +160,8 @@ int main() {
         authority_boundary_test(base / "authority.state");
         semantic_validation_test(base / "semantic-validation.state");
         empty_state_file_test(base / "empty.state");
+        ambiguous_reply_test(base / "ambiguous-reply.state");
+        unspecified_deferral_test(base / "unspecified-deferral.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;
