@@ -182,6 +182,15 @@ const server = createServer(async (request, response) => {
       send(request, response, 200, parseOutcome(await runLume(["toggle-automation", String(body.id), body.status.trim(), "--json"])));
       return;
     }
+    if (request.method === "POST" && request.url === "/api/automations/trigger") {
+      const body = await readBody(request);
+      if (typeof body.id !== "number") {
+        send(request, response, 400, { error: "Identificador de automação inválido." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume(["trigger-automation", String(body.id), "--json"])));
+      return;
+    }
     if (request.method === "POST" && request.url === "/api/tick") {
       const body = await readBody(request);
       const args = ["tick", "--json"];

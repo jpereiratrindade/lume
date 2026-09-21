@@ -432,6 +432,21 @@ void tick_eod_review_test(const std::filesystem::path& path) {
     expect(tick_eod.emitted_notifications.front().action_type == "eod_prompt", "action_type must be eod_prompt");
 }
 
+void trigger_automation_manual_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+    assistant.say("Preciso pagar a conta de luz", at("2026-09-21T08:00:00"));
+    const auto created = assistant.create_automation("Organização Matinal", "08:30", "has_open_intentions",
+                                                    "propose_daily_plan", "prepare_proposal",
+                                                    at("2026-09-21T08:01:00"));
+    const auto auto_id = created.automation_proposal->id;
+
+    const auto triggered = assistant.trigger_automation(auto_id, at("2026-09-21T14:30:00"));
+    expect(triggered.decision == "AUTOMATION_TRIGGERED", "manual trigger must succeed");
+    expect(triggered.plan_proposal.has_value(), "manual trigger must create plan proposal");
+    expect(triggered.plan_proposal->status == "draft", "proposal must be in draft");
+}
+
 }  // namespace
 
 int main() {
@@ -457,6 +472,7 @@ int main() {
         malformed_ledger_reject_test(base / "malformed.state");
         epistemic_class_test(base / "epistemic.state");
         automation_creation_and_status_toggle_test(base / "auto-toggle.state");
+        trigger_automation_manual_test(base / "auto-manual-trigger.state");
         tick_evaluation_morning_plan_test(base / "auto-tick-morning.state");
         tick_evaluation_no_duplicate_triggers_test(base / "auto-tick-dedup.state");
         tick_eod_review_test(base / "auto-tick-eod.state");

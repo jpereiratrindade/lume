@@ -32,6 +32,7 @@ public:
                               std::string_view authority,
                               TimePoint now);
     Outcome toggle_automation(std::uint64_t automation_id, std::string_view new_status, TimePoint now);
+    Outcome trigger_automation(std::uint64_t automation_id, TimePoint now);
     Outcome tick(TimePoint now);
 
     [[nodiscard]] std::optional<AttentionCandidate> compute_attention_candidate(TimePoint now) const;

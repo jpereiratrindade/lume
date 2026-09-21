@@ -518,6 +518,190 @@ Outcome Assistant::toggle_automation(std::uint64_t automation_id, std::string_vi
     });
 }
 
+Outcome Assistant::trigger_automation(std::uint64_t automation_id, TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.automation_proposals.begin(), state.automation_proposals.end(),
+                               [automation_id](const auto& a) { return a.id == automation_id; });
+        if (it == state.automation_proposals.end()) {
+            return {
+                .decision = "AUTOMATION_NOT_FOUND",
+                .message = "Rotina #" + std::to_string(automation_id) + " não encontrada no ledger.",
+                .reason = "identificador inexistente",
+                .changed = false,
+                .type = "text",
+                .plan_proposal = std::nullopt,
+                .automation_proposal = std::nullopt,
+                .emitted_notifications = {},
+                .attention_candidate = compute_attention_candidate(now),
+            };
+        }
+
+        const auto& auto_item = *it;
+        std::vector<EventRecord> batch;
+        std::vector<NotificationRecord> emitted;
+        std::optional<PlanProposal> generated_plan;
+        std::uint64_t next_id = state.next_id;
+
+        batch.push_back(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::user_declared,
+            .payload = EventAutomationTriggered{
+                .automation_id = auto_item.id,
+                .triggered_at = now,
+                .explanation = "disparo manual solicitado pelo usuário",
+            },
+        });
+
+        if (auto_item.action_then == "propose_daily_plan") {
+            std::vector<Intention> open_items;
+            for (const auto& item : state.intentions) {
+                if (item.status == IntentionStatus::open) open_items.push_back(item);
+            }
+            auto candidate = language_->propose_plan(PlanRequest{
+                .utterance = "Organizar rotina matinal",
+                .horizon = "morning",
+                .reference_time = now,
+                .open_intentions = std::move(open_items),
+            });
+
+            PlanProposal proposal{
+                .id = next_id++,
+                .created_at = now,
+                .horizon = candidate.horizon,
+                .summary = candidate.summary,
+                .blocks = std::move(candidate.blocks),
+                .points_of_attention = std::move(candidate.points_of_attention),
+                .status = "draft",
+                .source = "automation:" + std::to_string(auto_item.id),
+                .as_of_sequence = 0,
+                .basis_intentions_digest = "",
+            };
+
+            batch.push_back(EventRecord{
+                .sequence_number = 0,
+                .recorded_at = now,
+                .authority = "core",
+                .epistemic_class = EpistemicClass::proposed,
+                .payload = EventPlanProposed{
+                    .id = proposal.id,
+                    .created_at = now,
+                    .horizon = proposal.horizon,
+                    .summary = proposal.summary,
+                    .blocks = proposal.blocks,
+                    .points_of_attention = proposal.points_of_attention,
+                    .status = proposal.status,
+                    .source = proposal.source,
+                },
+            });
+
+            const auto notif_id = next_id++;
+            NotificationRecord notif{
+                .id = notif_id,
+                .automation_id = auto_item.id,
+                .emitted_at = now,
+                .title = "Proposta de Organização do Dia",
+                .message = proposal.summary,
+                .action_type = "plan_proposal",
+                .reference_id = proposal.id,
+                .epistemic_class = EpistemicClass::observed,
+            };
+            batch.push_back(EventRecord{
+                .sequence_number = 0,
+                .recorded_at = now,
+                .authority = "core",
+                .epistemic_class = EpistemicClass::observed,
+                .payload = EventNotificationEmitted{
+                    .id = notif.id,
+                    .automation_id = notif.automation_id,
+                    .emitted_at = notif.emitted_at,
+                    .title = notif.title,
+                    .message = notif.message,
+                    .action_type = notif.action_type,
+                    .reference_id = notif.reference_id,
+                },
+            });
+            emitted.push_back(notif);
+            generated_plan = proposal;
+        } else if (auto_item.action_then == "ask_eod_review") {
+            std::size_t open_count = std::count_if(state.intentions.begin(), state.intentions.end(),
+                                                  [](const auto& i) { return i.status == IntentionStatus::open; });
+            const auto notif_id = next_id++;
+            std::string msg = "Você tem " + std::to_string(open_count) + " intenção(ões) em aberto. Deseja revisá-las ou adiar para amanhã?";
+            NotificationRecord notif{
+                .id = notif_id,
+                .automation_id = auto_item.id,
+                .emitted_at = now,
+                .title = "Fechamento do Dia",
+                .message = msg,
+                .action_type = "eod_prompt",
+                .reference_id = std::nullopt,
+                .epistemic_class = EpistemicClass::observed,
+            };
+            batch.push_back(EventRecord{
+                .sequence_number = 0,
+                .recorded_at = now,
+                .authority = "core",
+                .epistemic_class = EpistemicClass::observed,
+                .payload = EventNotificationEmitted{
+                    .id = notif.id,
+                    .automation_id = notif.automation_id,
+                    .emitted_at = notif.emitted_at,
+                    .title = notif.title,
+                    .message = notif.message,
+                    .action_type = notif.action_type,
+                    .reference_id = notif.reference_id,
+                },
+            });
+            emitted.push_back(notif);
+        } else {
+            const auto notif_id = next_id++;
+            NotificationRecord notif{
+                .id = notif_id,
+                .automation_id = auto_item.id,
+                .emitted_at = now,
+                .title = auto_item.title.empty() ? "Lembrete do Lume" : auto_item.title,
+                .message = "Disparo da rotina: " + auto_item.action_then,
+                .action_type = "info",
+                .reference_id = std::nullopt,
+                .epistemic_class = EpistemicClass::observed,
+            };
+            batch.push_back(EventRecord{
+                .sequence_number = 0,
+                .recorded_at = now,
+                .authority = "core",
+                .epistemic_class = EpistemicClass::observed,
+                .payload = EventNotificationEmitted{
+                    .id = notif.id,
+                    .automation_id = notif.automation_id,
+                    .emitted_at = notif.emitted_at,
+                    .title = notif.title,
+                    .message = notif.message,
+                    .action_type = notif.action_type,
+                    .reference_id = notif.reference_id,
+                },
+            });
+            emitted.push_back(notif);
+        }
+
+        ledger_.append_batch(batch);
+
+        return {
+            .decision = "AUTOMATION_TRIGGERED",
+            .message = "Rotina '" + (auto_item.title.empty() ? ("#" + std::to_string(auto_item.id)) : auto_item.title) + "' disparada com sucesso.",
+            .reason = "disparo manual sob demanda",
+            .changed = true,
+            .type = generated_plan.has_value() ? "plan_proposal" : "text",
+            .plan_proposal = generated_plan,
+            .automation_proposal = auto_item,
+            .emitted_notifications = emitted,
+            .attention_candidate = compute_attention_candidate(now),
+        };
+    });
+}
+
 Outcome Assistant::tick(TimePoint now) {
     return ledger_.with_exclusive_lock([&]() -> Outcome {
         auto state = ledger_.project_state();

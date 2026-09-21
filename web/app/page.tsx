@@ -165,7 +165,6 @@ export default function Home() {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [ledgerEventsCount, setLedgerEventsCount] = useState<number>(0);
   const [activePlan, setActivePlan] = useState<PlanProposal | null>(null);
-  const [draft, setDraft] = useState("");
   const [processing, setProcessing] = useState(false);
   const [awaitingReply, setAwaitingReply] = useState(false);
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
@@ -459,6 +458,38 @@ export default function Home() {
 
   const [tickFeedback, setTickFeedback] = useState<string | null>(null);
 
+  async function handleTriggerAutomation(id: number) {
+    setProcessing(true);
+    setTickFeedback(null);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/automations/trigger`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        if (!response.ok) throw new Error("Erro ao disparar rotina.");
+        const result = (await response.json()) as LumeOutcome;
+        if (result.plan_proposal) {
+          setActivePlan(result.plan_proposal);
+          setViewMode("plan");
+          setTickFeedback(`✓ Rotina executada: Proposta de plano gerada.`);
+        } else {
+          setTickFeedback(`✓ ${result.message}`);
+        }
+        append("lume", result.message, result.reason, result.plan_proposal);
+        await refreshContext();
+      } else {
+        setTickFeedback("Rotina simulada no modo prévia.");
+        append("lume", "Rotina disparada.", "Simulação em modo prévia.");
+      }
+    } catch (error) {
+      append("lume", "Falha ao disparar rotina.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
   async function handleTriggerTick(simulatedTime?: string) {
     setProcessing(true);
     setTickFeedback(null);
@@ -479,7 +510,10 @@ export default function Home() {
           setViewMode("plan");
           setTickFeedback(`✓ Disparo realizado: ${result.message}`);
         } else {
-          setTickFeedback(`○ Avaliado: ${result.message}`);
+          const currentTimeStr = now ? formatBlockTime(now.toISOString()) : "agora";
+          setTickFeedback(
+            `○ Avaliado às ${currentTimeStr}: Nenhuma rotina programada para este minuto exato. Use "▶ Disparar agora" no cartão para executar imediatamente.`
+          );
         }
         append("lume", result.message, result.reason, result.plan_proposal);
         await refreshContext();
@@ -551,12 +585,10 @@ export default function Home() {
     );
   }
 
-  async function send(event?: FormEvent) {
-    event?.preventDefault();
-    const text = draft.trim();
+  async function send(rawText: string) {
+    const text = rawText.trim();
     if (!text || processing) return;
     append("person", text);
-    setDraft("");
     setProcessing(true);
     setStatusMessage(null);
     try {
@@ -577,13 +609,6 @@ export default function Home() {
     } finally {
       setProcessing(false);
       window.setTimeout(() => composer.current?.focus(), 50);
-    }
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void send();
     }
   }
 
@@ -720,11 +745,8 @@ export default function Home() {
             {/* Caixa de Entrada Calma */}
             <div className="composer-anchor">
               <Composer
-                draft={draft}
-                setDraft={setDraft}
                 processing={processing}
-                onSubmit={send}
-                onKeyDown={handleKeyDown}
+                onSend={send}
                 inputRef={composer}
               />
 
@@ -923,14 +945,38 @@ export default function Home() {
                           ? `Último disparo: ${formatBlockTime(item.last_triggered_at)}`
                           : "Ainda não disparada"}
                       </span>
-                      <button
-                        type="button"
-                        className="btn-toggle-auto"
-                        disabled={processing}
-                        onClick={() => handleToggleAutomation(item.id, item.status)}
-                      >
-                        {item.status === "active" ? "Pausar" : "Ativar"}
-                      </button>
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                        <button
+                          type="button"
+                          className="btn-trigger-now"
+                          disabled={processing}
+                          onClick={() => handleTriggerAutomation(item.id)}
+                          style={{
+                            padding: "0.35rem 0.75rem",
+                            background: "var(--accent-ember, #c9653c)",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: "6px",
+                            fontSize: "0.8rem",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.3rem",
+                          }}
+                          title="Executar esta rotina imediatamente"
+                        >
+                          ▶ Disparar agora
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-toggle-auto"
+                          disabled={processing}
+                          onClick={() => handleToggleAutomation(item.id, item.status)}
+                        >
+                          {item.status === "active" ? "Pausar" : "Ativar"}
+                        </button>
+                      </div>
                     </div>
                   </article>
                 ))}
@@ -1148,22 +1194,33 @@ export default function Home() {
 }
 
 function Composer({
-  draft,
-  setDraft,
   processing,
-  onSubmit,
-  onKeyDown,
+  onSend,
   inputRef,
 }: {
-  draft: string;
-  setDraft: (value: string) => void;
   processing: boolean;
-  onSubmit: (event?: FormEvent) => Promise<void>;
-  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  onSend: (text: string) => Promise<void>;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }) {
+  const [text, setText] = useState("");
+
+  const handleSubmit = async (event?: FormEvent) => {
+    event?.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || processing) return;
+    setText("");
+    await onSend(trimmed);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void handleSubmit();
+    }
+  };
+
   return (
-    <form className="calm-composer" onSubmit={(event) => void onSubmit(event)}>
+    <form className="calm-composer" onSubmit={(event) => void handleSubmit(event)}>
       <label className="sr-only" htmlFor="calm-thought">
         Diga o que mudou ou peça um plano
       </label>
@@ -1171,13 +1228,13 @@ function Composer({
         ref={inputRef}
         id="calm-thought"
         rows={1}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={onKeyDown}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder="Pode falar do teu jeito, pedir um plano ou guardar um contexto…"
         disabled={processing}
       />
-      <button type="submit" aria-label="Enviar" disabled={!draft.trim() || processing}>
+      <button type="submit" aria-label="Enviar" disabled={!text.trim() || processing}>
         <span aria-hidden="true">↑</span>
       </button>
     </form>

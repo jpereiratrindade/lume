@@ -173,6 +173,7 @@ void print_help() {
         << "  lume automations                        lista automações ativas e histórico\n"
         << "  lume create-automation <t> <w> <c> <a>  cria nova rotina de automação\n"
         << "  lume toggle-automation <id> <status>    ativa ou pausa uma automação\n"
+        << "  lume trigger-automation <id>            dispara uma automação imediatamente\n"
         << "  lume why                                explica a última interação\n"
         << "  lume doctor                             mostra o provedor linguístico ativo\n"
         << "  lume inspect                            mostra fatos, intenções e proveniência\n"
@@ -336,6 +337,10 @@ int main(int argc, char** argv) {
             const auto id = std::stoull(positional[1]);
             const auto status = positional[2];
             print_outcome(assistant.toggle_automation(id, status, moment), explain, json);
+        }
+        else if (command == "trigger-automation" && positional.size() >= 2) {
+            const auto id = std::stoull(positional[1]);
+            print_outcome(assistant.trigger_automation(id, moment), explain, json);
         }
         else if (command == "daemon") {
             std::cout << "Lume daemon iniciado. Avaliando a cada " << interval_sec << "s...\n";
