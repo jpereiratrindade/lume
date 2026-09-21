@@ -457,28 +457,40 @@ export default function Home() {
     }
   }
 
-  async function handleTriggerTick() {
+  const [tickFeedback, setTickFeedback] = useState<string | null>(null);
+
+  async function handleTriggerTick(simulatedTime?: string) {
     setProcessing(true);
+    setTickFeedback(null);
     try {
       if (connection === "local") {
+        const payload: { at?: string } = {};
+        if (simulatedTime) payload.at = simulatedTime;
+
         const response = await fetch(`${bridge}/api/tick`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
+          body: JSON.stringify(payload),
         });
         if (!response.ok) throw new Error("Erro ao executar ciclo de avaliação do daemon.");
         const result = (await response.json()) as LumeOutcome;
         if (result.plan_proposal) {
           setActivePlan(result.plan_proposal);
           setViewMode("plan");
+          setTickFeedback(`✓ Disparo realizado: ${result.message}`);
+        } else {
+          setTickFeedback(`○ Avaliado: ${result.message}`);
         }
         append("lume", result.message, result.reason, result.plan_proposal);
         await refreshContext();
       } else {
+        setTickFeedback("Ciclo executado no modo prévia.");
         append("lume", "Ciclo de avaliação executado.", "Nenhum gatilho pendente.");
       }
     } catch (error) {
-      append("lume", "Falha ao avaliar gatilhos.", error instanceof Error ? error.message : "Erro");
+      const msg = error instanceof Error ? error.message : "Erro ao avaliar gatilhos.";
+      setTickFeedback(`Falha: ${msg}`);
+      append("lume", "Falha ao avaliar gatilhos.", msg);
     } finally {
       setProcessing(false);
     }
@@ -849,18 +861,32 @@ export default function Home() {
             </div>
 
             {/* Ações Rápidas de Daemon */}
-            <div className="automation-actions-bar">
+            <div className="automation-actions-bar" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
               <button
                 type="button"
                 className="btn-tick"
                 disabled={processing}
-                onClick={handleTriggerTick}
+                onClick={() => void handleTriggerTick()}
               >
-                ⚡ Executar ciclo de avaliação (Tick)
+                ⚡ Executar ciclo agora ({now ? formatBlockTime(now.toISOString()) : "agora"})
+              </button>
+              <button
+                type="button"
+                className="btn-tick"
+                style={{ background: "rgba(255, 255, 255, 0.08)" }}
+                disabled={processing}
+                onClick={() => void handleTriggerTick("2026-09-22T08:30:00")}
+              >
+                ⏰ Testar disparo matinal (08:30)
               </button>
               <span className="tick-info">
                 {automations.filter((a) => a.status === "active").length} rotina(s) ativa(s) no Ledger local.
               </span>
+              {tickFeedback && (
+                <div style={{ width: "100%", marginTop: "0.5rem", fontSize: "0.85rem", color: "var(--accent, #e29578)", background: "rgba(226, 149, 120, 0.1)", padding: "0.4rem 0.75rem", borderRadius: "6px" }}>
+                  {tickFeedback}
+                </div>
+              )}
             </div>
 
             {/* Rotinas Ativas */}
