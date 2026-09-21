@@ -490,6 +490,44 @@ body {
   margin-bottom: 1.5rem;
 }
 
+.untimed-context {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.untimed-context h3 {
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.untimed-context-intro {
+  margin-bottom: 0.85rem;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.intention-card.untimed {
+  border-left: 3px solid var(--ink-muted);
+}
+
+.preserved-context-group {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.preserved-context-group > summary {
+  margin-bottom: 0.8rem;
+  cursor: pointer;
+}
+
+.intention-card.fact {
+  border-left: 3px solid var(--accent-slate);
+}
+
 .care-container .intention-main {
   flex: 1;
   min-width: 0;

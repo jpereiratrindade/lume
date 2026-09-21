@@ -36,6 +36,13 @@ std::string extract_subject(std::string_view original) {
                                        : trim(std::string(original.substr(marker + 6)));
 }
 
+bool first_word_looks_actionable(std::string_view normalized) {
+    const auto separator = normalized.find(' ');
+    const auto word = normalized.substr(0, separator);
+    return word.size() > 3 &&
+           (word.ends_with("ar") || word.ends_with("er") || word.ends_with("ir"));
+}
+
 }  // namespace
 
 std::string fold_portuguese(std::string_view input) {
@@ -86,6 +93,38 @@ InterpretationCandidate DeterministicLanguage::interpret(const InterpretationReq
             .precision = "date+period",
             .confidence = 1.0,
             .ambiguities = {},
+            .source = name(),
+        };
+    }
+
+    const bool declared_fact = normalized.starts_with("estou ") || normalized.starts_with("sou ") ||
+                               normalized.starts_with("vou estar ") ||
+                               (normalized.starts_with("tenho ") && !normalized.starts_with("tenho que ") &&
+                                !normalized.starts_with("tenho de "));
+    if (declared_fact) {
+        return {
+            .kind = "context_fact",
+            .subject = trim(request.utterance),
+            .temporal = {.date_reference = "unspecified", .period = "unspecified"},
+            .precision = "intentionally-unspecified",
+            .confidence = 0.85,
+            .ambiguities = {},
+            .source = name(),
+        };
+    }
+
+    const bool untimed_intention = normalized.find("quero ") != std::string::npos ||
+                                   normalized.find("preciso ") != std::string::npos ||
+                                   normalized.starts_with("tenho que ") || normalized.starts_with("tenho de ") ||
+                                   first_word_looks_actionable(normalized);
+    if (untimed_intention) {
+        return {
+            .kind = "intention",
+            .subject = extract_subject(request.utterance),
+            .temporal = {.date_reference = "unspecified", .period = "unspecified"},
+            .precision = "intentionally-unspecified",
+            .confidence = 0.75,
+            .ambiguities = {"missing_action_window"},
             .source = name(),
         };
     }

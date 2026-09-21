@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,4 +185,12 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
     headers: { origin: "http://127.0.0.1:3001" },
   });
   assert.equal(wrongLocalPort.status, 403);
+});
+
+test("o desenvolvimento local usa descoberta automática do modelo", async () => {
+  const localDev = await readFile(resolve(webRoot, "scripts/local-dev.mjs"), "utf8");
+  const localBridge = await readFile(resolve(webRoot, "scripts/local-bridge.mjs"), "utf8");
+  assert.match(localDev, /LUME_LLM:\s*process\.env\.LUME_LLM\s*\|\|\s*"auto"/);
+  assert.match(localBridge, /childEnvironment\.LUME_LLM\s*=\s*"auto"/);
+  assert.doesNotMatch(localDev, /LUME_LLM:\s*process\.env\.LUME_LLM\s*\|\|\s*"deterministic"/);
 });

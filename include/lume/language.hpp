@@ -12,6 +12,7 @@ namespace lume {
 struct ContextProjection {
     std::string active_subject;
     std::vector<std::string> recent_open_subjects;
+    std::vector<std::string> recent_facts;
     std::vector<Intention> open_intentions;
 };
 

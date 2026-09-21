@@ -21,6 +21,16 @@ struct EventExpressionRecorded {
     std::string text;
 };
 
+struct EventContextDerived {
+    std::uint64_t id{};
+    std::uint64_t expression_id{};
+    std::string kind;
+    std::string subject;
+    std::string precision{"intentionally-unspecified"};
+    std::string interpretation_source;
+    double confidence{};
+};
+
 struct EventIntentionDerived {
     std::uint64_t id{};
     std::uint64_t expression_id{};
@@ -133,6 +143,7 @@ struct EventNotificationEmitted {
 
 using EventPayload = std::variant<
     EventExpressionRecorded,
+    EventContextDerived,
     EventIntentionDerived,
     EventIntentionStatusChanged,
     EventIntentionDeferred,

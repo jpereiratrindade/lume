@@ -125,7 +125,7 @@ STATE=/tmp/lume-demo.ledger
 ./build/lume --state "$STATE" inspect
 ```
 
-A persistência do Lume opera sobre um **Event Ledger em SQLite com WAL (Write-Ahead Logging)** com validação estrita (`LUME-HARDENING-001`), transações ACID, locks reentrantes thread-safe, separação entre autoridade e classes epistêmicas ([LUME-BOOTSTRAP-001](docs/spec/LUME-BOOTSTRAP-001.md)), detecção de planos obsoletos e projeção factual em três profundidades ([LUME-EXPERIENCE-001](docs/spec/LUME-EXPERIENCE-001.md)).
+A persistência do Lume opera sobre um **Event Ledger em SQLite com WAL (Write-Ahead Logging)** com validação estrita (`LUME-HARDENING-001`), transações ACID, locks reentrantes thread-safe, separação entre autoridade e classes epistêmicas ([LUME-BOOTSTRAP-001](docs/spec/LUME-BOOTSTRAP-001.md)), detecção de planos obsoletos e uma experiência factual em duas superfícies ([LUME-EXPERIENCE-001](docs/spec/LUME-EXPERIENCE-001.md)).
 
 Para executar o monitoramento residente do relógio e disparos de automações:
 
@@ -136,3 +136,7 @@ Para executar o monitoramento residente do relógio e disparos de automações:
 ## Limites honestos desta versão
 
 O fallback reconhece expressões explícitas como “amanhã de manhã quero …” e pedidos estruturados de planejamento (“organiza minha manhã”, “organiza minha semana”). O modelo local entende variações linguísticas, mas o core C++ aceita apenas formas estruturadas validadas contra schema estrito. Nenhuma proposta é aplicada sem consentimento explícito registrado no Ledger.
+
+## Licença
+
+O Lume é distribuído sob a [GNU General Public License v3.0](LICENSE), exclusivamente na versão 3 (`GPL-3.0-only`).

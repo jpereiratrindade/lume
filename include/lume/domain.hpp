@@ -28,6 +28,17 @@ struct Expression {
     EpistemicClass epistemic_class{EpistemicClass::user_declared};
 };
 
+struct ContextItem {
+    std::uint64_t id{};
+    std::uint64_t expression_id{};
+    std::string kind; // "fact" or "intention"
+    std::string subject;
+    std::string precision{"intentionally-unspecified"};
+    std::string interpretation_source;
+    double confidence{};
+    EpistemicClass epistemic_class{EpistemicClass::derived};
+};
+
 struct Intention {
     std::uint64_t id{};
     std::uint64_t expression_id{};
@@ -113,6 +124,7 @@ struct AttentionCandidate {
 struct State {
     std::uint64_t next_id{1};
     std::vector<Expression> expressions;
+    std::vector<ContextItem> context_items;
     std::vector<Intention> intentions;
     std::vector<Interaction> interactions;
     std::vector<PlanProposal> plan_proposals;

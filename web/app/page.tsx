@@ -61,11 +61,22 @@ type ExpressionRecord = {
   epistemic_class: string;
 };
 
+type ContextItem = {
+  id: number;
+  expression_id: number;
+  kind: "fact" | "intention";
+  subject: string;
+  precision: string;
+  interpretation_source: string;
+  confidence: number;
+};
+
 type LumeState = {
   state_version?: number;
   ledger_events_count?: number;
   attention_candidate?: AttentionCandidate | null;
   expressions?: ExpressionRecord[];
+  context_items?: ContextItem[];
   intentions: Intention[];
   interactions: Array<{
     id: number;
@@ -185,9 +196,11 @@ function humanAuthority(value: string) {
 
 export default function Home() {
   const [connection, setConnection] = useState<Connection>("checking");
+  const [languageProvider, setLanguageProvider] = useState("verificando");
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
   const [messages, setMessages] = useState<Message[]>([]);
   const [expressions, setExpressions] = useState<ExpressionRecord[]>([]);
+  const [contextItems, setContextItems] = useState<ContextItem[]>([]);
   const [intentions, setIntentions] = useState<Intention[]>([]);
   const [attentionCandidate, setAttentionCandidate] = useState<AttentionCandidate | null>(null);
   const [automations, setAutomations] = useState<AutomationProposal[]>([]);
@@ -213,12 +226,33 @@ export default function Home() {
     [intentions],
   );
 
+  const untimedIntentions = useMemo(
+    () => contextItems.filter((item) => item.kind === "intention"),
+    [contextItems],
+  );
+
+  const contextFacts = useMemo(
+    () => contextItems.filter((item) => item.kind === "fact"),
+    [contextItems],
+  );
+
+  const unclassifiedContext = useMemo(() => {
+    const linkedExpressions = new Set([
+      ...intentions.map((item) => item.expression_id).filter(Boolean),
+      ...contextItems.map((item) => item.expression_id),
+    ]);
+    return expressions
+      .filter((item) => item.epistemic_class === "user_declared" && !linkedExpressions.has(item.id))
+      .toReversed();
+  }, [contextItems, expressions, intentions]);
+
   const refreshContext = useCallback(async () => {
     try {
       const response = await fetch(`${bridge}/api/inspect`);
       if (response.ok) {
         const state = (await response.json()) as LumeState;
         setExpressions(state.expressions ?? []);
+        setContextItems(state.context_items ?? []);
         setIntentions(state.intentions ?? []);
         setAttentionCandidate(state.attention_candidate ?? null);
         if (typeof state.ledger_events_count === "number") {
@@ -253,6 +287,10 @@ export default function Home() {
       try {
         const response = await fetch(`${bridge}/api/health`);
         if (!response.ok) throw new Error("bridge unavailable");
+        const health = (await response.json()) as { detail?: string };
+        setLanguageProvider(
+          health.detail?.replace(/^Provedor linguístico:\s*/i, "") || "fallback determinístico",
+        );
         if (!active) return;
         setConnection("local");
         await refreshContext();
@@ -277,7 +315,10 @@ export default function Home() {
           }
         }
       } catch {
-        if (active) setConnection("preview");
+        if (active) {
+          setConnection("preview");
+          setLanguageProvider("prévia determinística");
+        }
       }
     }
     connect();
@@ -936,10 +977,54 @@ export default function Home() {
                     </article>
                   ))}
                 </div>
-              ) : (
+              ) : untimedIntentions.length === 0 && contextFacts.length === 0 && unclassifiedContext.length === 0 ? (
                 <div className="empty-intentions-card">
                   <p>Nada em aberto.</p>
                 </div>
+              ) : null}
+
+              {untimedIntentions.length > 0 && (
+                <div className="untimed-context">
+                  <h3>Ainda sem momento definido</h3>
+                  <p className="untimed-context-intro">O Lume guardou isto, mas ainda não sabe quando deve trazer de volta.</p>
+                  <div className="intentions-list">
+                    {untimedIntentions.map((item) => (
+                      <article key={item.id} className="intention-card untimed">
+                        <div className="intention-main">
+                          <strong>{item.subject}</strong>
+                          <p className="care-window">Diga ao Lume quando isto deve voltar.</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {contextFacts.length > 0 && (
+                <details className="preserved-context-group">
+                  <summary>Contexto que o Lume considera ({contextFacts.length})</summary>
+                  <div className="intentions-list">
+                    {contextFacts.map((item) => (
+                      <article key={item.id} className="intention-card fact">
+                        <div className="intention-main"><strong>{item.subject}</strong></div>
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {unclassifiedContext.length > 0 && (
+                <details className="preserved-context-group">
+                  <summary>Registros anteriores preservados ({unclassifiedContext.length})</summary>
+                  <p className="untimed-context-intro">Foram guardados antes da classificação contextual e continuam disponíveis.</p>
+                  <div className="intentions-list">
+                    {unclassifiedContext.map((item) => (
+                      <article key={item.id} className="intention-card untimed">
+                        <div className="intention-main"><strong>{item.text}</strong></div>
+                      </article>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
 
@@ -1333,13 +1418,13 @@ export default function Home() {
               <article className="connection-card">
                 <div className="conn-header">
                   <span className={`conn-status-dot ${connection === "local" ? "is-live" : ""}`} />
-                  <strong>Provedor de Linguagem Local</strong>
-                  <span className="conn-tag">{connection === "local" ? "Loopback isolado" : "Prévia de linguagem"}</span>
+                  <strong>Camada de linguagem</strong>
+                  <span className="conn-tag">{languageProvider}</span>
                 </div>
                 <p className="conn-desc">
-                  {connection === "local"
-                    ? "OpenAI-compatible local em 127.0.0.1. Nenhum dado sai da máquina."
-                    : "Gramática determinística em execução."}
+                  {languageProvider.startsWith("local-openai:")
+                    ? "Modelo local ativo em loopback. Nenhum contexto sai da máquina."
+                    : "Fallback determinístico ativo; o contexto continua local."}
                 </p>
                 <div className="conn-permissions">
                   <span className="perm-ok">✓ Proposição de texto e candidatos</span>

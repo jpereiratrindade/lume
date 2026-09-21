@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -28,4 +29,13 @@ test("server-renders the Lume presence surface", async () => {
   assert.doesNotMatch(html, /Intenções Declaradas no Ledger|Nova Intenção|Organizar minha semana/);
   assert.match(html, /https:\/\/lume\.example\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|Starter Project/);
+});
+
+test("keeps preserved context without timing visible under care", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /untimedIntentions/);
+  assert.match(source, /Ainda sem momento definido/);
+  assert.match(source, /O Lume guardou isto, mas ainda não sabe quando deve trazer de volta/);
+  assert.match(source, /Contexto que o Lume considera/);
+  assert.match(source, /Registros anteriores preservados/);
 });

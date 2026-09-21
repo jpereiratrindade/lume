@@ -177,12 +177,22 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
                 context.open_intentions.push_back(item);
             }
         }
+        for (const auto& item : state.context_items) {
+            if (item.kind == "intention") context.recent_open_subjects.push_back(item.subject);
+            else if (item.kind == "fact") context.recent_facts.push_back(item.subject);
+        }
 
-        const auto candidate = language_->interpret({clean, std::move(context)});
+        const InterpretationRequest interpretation_request{clean, context};
+        auto candidate = language_->interpret(interpretation_request);
 
         // If it's a request to plan / organize
         if (candidate.kind == "plan_request") {
-            return plan(candidate.subject, now);
+            const bool valid_horizon = candidate.subject == "morning" || candidate.subject == "afternoon" ||
+                                       candidate.subject == "day" || candidate.subject == "week";
+            if (valid_horizon) return plan(candidate.subject, now);
+
+            candidate = DeterministicLanguage{}.interpret(interpretation_request);
+            candidate.source = "core-fallback:invalid-plan-horizon";
         }
 
         // Language proposes. The core accepts only a known, complete, sufficiently confident shape.
@@ -214,6 +224,39 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
                 {"REMEMBER_MORNING", candidate.subject, {}});
             return {"REMEMBERED", formulation.text,
                     "a expressão contém uma intenção e uma janela temporal parcial", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+        }
+
+        const bool is_context_fact = candidate.kind == "context_fact";
+        const bool is_untimed_intention = candidate.kind == "intention";
+        if ((is_context_fact || is_untimed_intention) && candidate.confidence >= 0.5 &&
+            !candidate.subject.empty() && candidate.subject.size() <= 500) {
+            const auto context_id = state.next_id++;
+            const auto source = candidate.source.empty() ? language_->name() : candidate.source;
+            ledger_.append(EventRecord{
+                .sequence_number = 0,
+                .recorded_at = now,
+                .authority = "core",
+                .epistemic_class = EpistemicClass::derived,
+                .payload = EventContextDerived{
+                    .id = context_id,
+                    .expression_id = expression_id,
+                    .kind = is_context_fact ? "fact" : "intention",
+                    .subject = candidate.subject,
+                    .precision = candidate.precision.empty() ? "intentionally-unspecified" : candidate.precision,
+                    .interpretation_source = source,
+                    .confidence = candidate.confidence,
+                },
+            });
+
+            if (is_context_fact) {
+                return {"CONTEXT_HELD", "Entendi. Vou considerar isso como contexto.",
+                        "a expressão descreve um fato da realidade da pessoa", true, "text",
+                        std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+            }
+            return {"CONTEXT_HELD",
+                    "Certo. Vou manter isso sob cuidado. Se quiser, diga quando devo trazer de volta.",
+                    "a expressão descreve algo a fazer, mas ainda não define um momento", true, "text",
+                    std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
         }
 
         return {"REMEMBERED", "Certo. Guardei isso como contexto. Ainda não sei quando devo trazer de volta.",
@@ -1404,7 +1447,19 @@ std::string Assistant::inspect(TimePoint now) const {
                << ", \"text\": " << quote(item.text)
                << ", \"epistemic_class\": " << quote(to_string(item.epistemic_class)) << "}";
     }
-    output << (state.expressions.empty() ? "" : "\n  ") << "],\n  \"intentions\": [";
+    output << (state.expressions.empty() ? "" : "\n  ") << "],\n  \"context_items\": [";
+    for (std::size_t index = 0; index < state.context_items.size(); ++index) {
+        const auto& item = state.context_items[index];
+        output << (index == 0 ? "\n" : ",\n") << "    {\"id\": " << item.id
+               << ", \"expression_id\": " << item.expression_id
+               << ", \"kind\": " << quote(item.kind)
+               << ", \"subject\": " << quote(item.subject)
+               << ", \"precision\": " << quote(item.precision)
+               << ", \"interpretation_source\": " << quote(item.interpretation_source)
+               << ", \"confidence\": " << item.confidence
+               << ", \"epistemic_class\": " << quote(to_string(item.epistemic_class)) << "}";
+    }
+    output << (state.context_items.empty() ? "" : "\n  ") << "],\n  \"intentions\": [";
     for (std::size_t index = 0; index < state.intentions.size(); ++index) {
         const auto& item = state.intentions[index];
         output << (index == 0 ? "\n" : ",\n") << "    {\"id\": " << item.id

@@ -211,6 +211,17 @@ std::pair<std::string, std::string> serialize_payload(const EventPayload& payloa
                 {"text", event.text},
             };
             return {"EXPR_RECORDED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventContextDerived>) {
+            Json j{
+                {"id", event.id},
+                {"expression_id", event.expression_id},
+                {"kind", event.kind},
+                {"subject", event.subject},
+                {"precision", event.precision},
+                {"interpretation_source", event.interpretation_source},
+                {"confidence", event.confidence},
+            };
+            return {"CONTEXT_DERIVED", j.dump()};
         } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
             Json j{
                 {"id", event.id},
@@ -356,6 +367,17 @@ EventPayload deserialize_payload(std::string_view type, const std::string& json_
             .id = j.at("id").get<std::uint64_t>(),
             .timestamp = parse_time(j.at("timestamp").get<std::string>()).value_or(TimePoint{}),
             .text = j.at("text").get<std::string>(),
+        };
+    }
+    if (type == "CONTEXT_DERIVED") {
+        return EventContextDerived{
+            .id = j.at("id").get<std::uint64_t>(),
+            .expression_id = j.at("expression_id").get<std::uint64_t>(),
+            .kind = j.at("kind").get<std::string>(),
+            .subject = j.at("subject").get<std::string>(),
+            .precision = j.at("precision").get<std::string>(),
+            .interpretation_source = j.at("interpretation_source").get<std::string>(),
+            .confidence = j.at("confidence").get<double>(),
         };
     }
     if (type == "INT_DERIVED") {
@@ -894,6 +916,18 @@ State Ledger::project_state() const {
                     .id = event.id,
                     .recorded_at = event.timestamp,
                     .text = event.text,
+                    .epistemic_class = record.epistemic_class,
+                });
+            } else if constexpr (std::is_same_v<T, EventContextDerived>) {
+                max_id = std::max(max_id, event.id);
+                state.context_items.push_back(ContextItem{
+                    .id = event.id,
+                    .expression_id = event.expression_id,
+                    .kind = event.kind,
+                    .subject = event.subject,
+                    .precision = event.precision,
+                    .interpretation_source = event.interpretation_source,
+                    .confidence = event.confidence,
                     .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {

@@ -12,7 +12,7 @@ const port = parsePort(process.env.LUME_BRIDGE_PORT, 4141, true);
 const webPort = parsePort(process.env.LUME_WEB_PORT, 3000);
 const childEnvironment = { ...process.env };
 if (process.env.LUME_WEB_STATE_FILE) childEnvironment.LUME_STATE_FILE = process.env.LUME_WEB_STATE_FILE;
-if (!childEnvironment.LUME_LLM) childEnvironment.LUME_LLM = "deterministic";
+if (!childEnvironment.LUME_LLM) childEnvironment.LUME_LLM = "auto";
 
 function parsePort(value, fallback, allowZero = false) {
   const candidate = value === undefined ? fallback : Number(value);

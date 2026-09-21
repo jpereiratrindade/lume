@@ -55,6 +55,7 @@
 ### 2.3. Matriz de Autoridade e Epistemologia
 - **Autoridade**: `user` (pessoa humana), `core` (motor deliberativo), `user_policy` (rotina autorizada).
 - **Epistemologia**: `user_declared` (literalidade da declaração), `derived` (inferência estruturada a partir de fato primário), `observed` (observação factual de ambiente/horário), `proposed` (rascunho de plano aguardando aprovação).
+- **Contexto Estruturado**: `ContextItem` distingue fatos de intenções ainda sem janela temporal. Esses itens preservam expressão de origem, confiança e proveniência, mas não entram no motor de atenção até que exista base temporal validada.
 
 ### 2.4. Planejamento Ontológico e Detecção de Obsoleto (Staleness)
 - **Preservação de Intenções**: Aplicar um plano aloca `allocated_plan_start/end` sem apagar a declaração temporal original do usuário.

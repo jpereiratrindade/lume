@@ -57,6 +57,26 @@ public:
     std::string name() const override { return "contradictory-test-model"; }
 };
 
+class InvalidPlanLanguage final : public lume::LanguageProvider {
+public:
+    lume::InterpretationCandidate interpret(const lume::InterpretationRequest& request) override {
+        return {
+            .kind = "plan_request",
+            .subject = request.utterance,
+            .precision = "horizon",
+            .confidence = 1.0,
+            .source = name(),
+        };
+    }
+    lume::PlanProposalCandidate propose_plan(const lume::PlanRequest&) override {
+        return {.horizon = "day", .summary = "invalid", .confidence = 0.0};
+    }
+    lume::FormulationResult formulate(const lume::FormulationRequest&) override {
+        return {"invalid", name()};
+    }
+    std::string name() const override { return "invalid-plan-test-model"; }
+};
+
 void lifecycle_test(const std::filesystem::path& path) {
     lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
     const auto first = assistant.say("Amanhã de manhã quero trabalhar no artigo.",
@@ -127,6 +147,39 @@ void empty_state_file_test(const std::filesystem::path& path) {
            "initialized state should preserve the expression");
     expect(lume::Ledger{path}.project_state().intentions.empty(),
            "preserving context must not fabricate an actionable intention");
+}
+
+void contextual_classification_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
+
+    const auto intention = assistant.say("Desenvolver o projeto TinySystemOne",
+                                         at("2026-09-21T18:00:00"));
+    expect(intention.decision == "CONTEXT_HELD",
+           "an untimed intention should be held as structured context");
+
+    const auto fact = assistant.say("Estou de férias até o dia 4 de outubro",
+                                    at("2026-09-21T18:01:00"));
+    expect(fact.decision == "CONTEXT_HELD",
+           "a declared fact should be held as structured context");
+
+    const auto state = assistant.ledger().project_state();
+    expect(state.context_items.size() == 2, "both contextual items must be projected");
+    expect(state.context_items[0].kind == "intention", "the project should be an intention");
+    expect(state.context_items[1].kind == "fact", "vacation should be a contextual fact");
+    expect(state.intentions.empty(), "context without a validated window must not become timed attention");
+    expect(assistant.inspect().find("\"context_items\"") != std::string::npos,
+           "inspection must expose structured context");
+}
+
+void invalid_plan_horizon_falls_back_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Ledger{path}, std::make_unique<InvalidPlanLanguage>()};
+    const auto outcome = assistant.say("Desenvolver o projeto TinySystemOne",
+                                       at("2026-09-21T18:00:00"));
+    const auto state = assistant.ledger().project_state();
+    expect(outcome.decision == "CONTEXT_HELD", "invalid plan candidates must be downgraded safely");
+    expect(state.plan_proposals.empty(), "an arbitrary model subject must never become a plan horizon");
+    expect(state.context_items.size() == 1 && state.context_items.front().kind == "intention",
+           "the deterministic fallback should preserve the intended meaning");
 }
 
 void ambiguous_reply_test(const std::filesystem::path& path) {
@@ -512,6 +565,8 @@ int main() {
         authority_boundary_test(base / "authority.state");
         semantic_validation_test(base / "semantic-validation.state");
         empty_state_file_test(base / "empty.state");
+        contextual_classification_test(base / "contextual-classification.state");
+        invalid_plan_horizon_falls_back_test(base / "invalid-plan-horizon.state");
         ambiguous_reply_test(base / "ambiguous-reply.state");
         unspecified_deferral_test(base / "unspecified-deferral.state");
         ledger_immutability_and_replay_test(base / "ledger-replay.state");

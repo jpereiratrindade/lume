@@ -9,7 +9,7 @@ const childEnvironment = {
   ...process.env,
   LUME_BRIDGE_PORT: String(bridgePort),
   LUME_WEB_PORT: String(webPort),
-  LUME_LLM: process.env.LUME_LLM || "deterministic",
+  LUME_LLM: process.env.LUME_LLM || "auto",
   NEXT_PUBLIC_LUME_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`,
 };
 const children = [

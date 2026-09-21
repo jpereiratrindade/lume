@@ -36,6 +36,7 @@ Intervenção justificada            Exploração
 - **Linguagem Humana**: A superfície não expõe `intents`, Ledger, autoridade ou proveniência como linguagem principal.
 - **Ações Mínimas**: Resolver e adiar permanecem visíveis; ajustes, exclusão e explicações ficam em aprofundamento.
 - **Capacidades Recolhidas**: Organizar, rotinas, conexões e padrões existem, mas não ocupam a navegação primária.
+- **Sem Caixa de Entrada Acidental**: Fatos contextuais não aparecem como tarefas. Intenções sem data permanecem sob cuidado sem fabricar urgência ou horário.
 
 ### Orquestração
 - **Propósito**: Organizar um horizonte em blocos quando a pessoa pede ou aceita uma sugestão pertinente.
