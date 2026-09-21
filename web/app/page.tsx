@@ -108,7 +108,13 @@ type LumeOutcome = {
   emitted_notifications?: NotificationRecord[];
 };
 
-const bridge = process.env.NEXT_PUBLIC_LUME_BRIDGE_URL ?? "http://127.0.0.1:4141";
+function getBridgeUrl() {
+  if (typeof window === "undefined") {
+    return process.env.NEXT_PUBLIC_LUME_BRIDGE_URL ?? "http://127.0.0.1:4141";
+  }
+  const host = window.location.hostname === "localhost" ? "localhost" : "127.0.0.1";
+  return `http://${host}:4141`;
+}
 
 function canUseLocalBridge() {
   return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
@@ -186,6 +192,7 @@ export default function Home() {
   const [newEnd, setNewEnd] = useState("");
   const composer = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
+  const bridge = getBridgeUrl();
 
   const openIntentions = useMemo(
     () => intentions.filter((item) => item.status === "open" || item.status === "active"),

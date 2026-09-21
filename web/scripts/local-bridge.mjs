@@ -7,16 +7,12 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, "../..");
 const binary = process.env.LUME_BINARY || resolve(repository, "build/lume");
-const host = "127.0.0.1";
+const host = "0.0.0.0";
 const port = parsePort(process.env.LUME_BRIDGE_PORT, 4141, true);
 const webPort = parsePort(process.env.LUME_WEB_PORT, 3000);
 const childEnvironment = { ...process.env };
 if (process.env.LUME_WEB_STATE_FILE) childEnvironment.LUME_STATE_FILE = process.env.LUME_WEB_STATE_FILE;
 if (!childEnvironment.LUME_LLM) childEnvironment.LUME_LLM = "deterministic";
-const allowedOrigins = new Set([
-  `http://localhost:${webPort}`,
-  `http://127.0.0.1:${webPort}`,
-]);
 
 function parsePort(value, fallback, allowZero = false) {
   const candidate = value === undefined ? fallback : Number(value);
@@ -59,14 +55,30 @@ function runLume(args, timeout = 120_000) {
 }
 
 function isLoopback(address) {
-  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+  if (!address) return false;
+  return (
+    address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1" ||
+    address.startsWith("127.")
+  );
 }
 
 function corsHeaders(request) {
   const origin = request.headers.origin;
-  return origin && allowedOrigins.has(origin)
-    ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" }
-    : {};
+  if (!origin) return {};
+  try {
+    const parsed = new URL(origin);
+    if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname)) {
+      return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        Vary: "Origin",
+      };
+    }
+  } catch {}
+  return {};
 }
 
 function send(request, response, status, payload) {

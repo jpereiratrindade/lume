@@ -600,8 +600,7 @@ body {
 .lume-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  background: rgba(18, 17, 14, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
