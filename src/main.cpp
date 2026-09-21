@@ -342,6 +342,26 @@ int main(int argc, char** argv) {
             const auto id = std::stoull(positional[1]);
             print_outcome(assistant.trigger_automation(id, moment), explain, json);
         }
+        else if (command == "create-intention" && positional.size() >= 2) {
+            const auto subject = positional[1];
+            const auto start = positional.size() >= 3 ? lume::parse_time(positional[2]).value_or(moment) : moment;
+            const auto end = positional.size() >= 4 ? lume::parse_time(positional[3]).value_or(start + std::chrono::hours(2)) : start + std::chrono::hours(2);
+            print_outcome(assistant.create_intention(subject, start, end, moment), explain, json);
+        }
+        else if (command == "complete-intention" && positional.size() >= 2) {
+            const auto id = std::stoull(positional[1]);
+            print_outcome(assistant.update_intention_status(id, lume::IntentionStatus::completed, "concluída via comando terminal", moment), explain, json);
+        }
+        else if (command == "dismiss-intention" && positional.size() >= 2) {
+            const auto id = std::stoull(positional[1]);
+            print_outcome(assistant.update_intention_status(id, lume::IntentionStatus::dismissed, "descartada via comando terminal", moment), explain, json);
+        }
+        else if (command == "defer-intention" && positional.size() >= 2) {
+            const auto id = std::stoull(positional[1]);
+            const auto new_start = positional.size() >= 3 ? lume::parse_time(positional[2]).value_or(moment + std::chrono::hours(1)) : moment + std::chrono::hours(1);
+            const auto new_end = positional.size() >= 4 ? lume::parse_time(positional[3]).value_or(new_start + std::chrono::hours(2)) : new_start + std::chrono::hours(2);
+            print_outcome(assistant.defer_intention(id, new_start, new_end, "adiada via comando terminal", moment), explain, json);
+        }
         else if (command == "daemon") {
             std::cout << "Lume daemon iniciado. Avaliando a cada " << interval_sec << "s...\n";
             while (true) {

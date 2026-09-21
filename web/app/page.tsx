@@ -179,6 +179,11 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [intentionFilter, setIntentionFilter] = useState<"open" | "completed" | "all">("open");
+  const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [newSubject, setNewSubject] = useState("");
+  const [newStart, setNewStart] = useState("");
+  const [newEnd, setNewEnd] = useState("");
   const composer = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
 
@@ -186,6 +191,12 @@ export default function Home() {
     () => intentions.filter((item) => item.status === "open" || item.status === "active"),
     [intentions],
   );
+
+  const filteredIntentions = useMemo(() => {
+    if (intentionFilter === "open") return intentions.filter((i) => i.status === "open" || i.status === "active");
+    if (intentionFilter === "completed") return intentions.filter((i) => i.status === "completed");
+    return intentions;
+  }, [intentions, intentionFilter]);
 
   async function refreshContext() {
     try {
@@ -461,6 +472,107 @@ export default function Home() {
       }
     } catch (error) {
       append("lume", "Falha ao alterar status.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleCreateIntentionDirect(subject: string, start?: string, end?: string) {
+    if (!subject.trim()) return;
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/intentions/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject: subject.trim(), start, end }),
+        });
+        if (!response.ok) throw new Error("Erro ao criar intenção.");
+        const outcome = (await response.json()) as LumeOutcome;
+        append("lume", outcome.message, outcome.reason);
+        await refreshContext();
+      } else {
+        const nowTime = now ?? new Date();
+        const startIso = start || nowTime.toISOString();
+        const endIso = end || new Date(nowTime.getTime() + 2 * 3600 * 1000).toISOString();
+        setIntentions((prev) => [
+          ...prev,
+          {
+            id: Date.now(),
+            subject: subject.trim(),
+            window_start: startIso,
+            window_end: endIso,
+            precision: "direct",
+            authority: "user",
+            interpretation_source: "user_direct",
+            status: "open",
+            last_interaction_at: null,
+          },
+        ]);
+        append("lume", `Intenção "${subject}" registrada no modo prévia.`);
+      }
+    } catch (err) {
+      append("lume", "Falha ao criar intenção.", err instanceof Error ? err.message : "Erro");
+    } finally {
+      setProcessing(false);
+      setIsNewModalOpen(false);
+      setNewSubject("");
+      setNewStart("");
+      setNewEnd("");
+    }
+  }
+
+  async function handleUpdateIntentionStatus(id: number, status: "completed" | "dismissed") {
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/intentions/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, status }),
+        });
+        if (!response.ok) throw new Error("Erro ao atualizar status da intenção.");
+        const outcome = (await response.json()) as LumeOutcome;
+        append("lume", outcome.message, outcome.reason);
+        await refreshContext();
+      } else {
+        setIntentions((prev) =>
+          prev.map((i) => (i.id === id ? { ...i, status } : i))
+        );
+      }
+    } catch (err) {
+      append("lume", "Falha ao atualizar intenção.", err instanceof Error ? err.message : "Erro");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleDeferIntention(id: number, hoursOffset: number) {
+    setProcessing(true);
+    try {
+      const baseDate = now ?? new Date();
+      const targetStart = new Date(baseDate.getTime() + hoursOffset * 3600 * 1000);
+      const targetEnd = new Date(targetStart.getTime() + 2 * 3600 * 1000);
+      const startIso = targetStart.toISOString();
+      const endIso = targetEnd.toISOString();
+
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/intentions/defer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, start: startIso, end: endIso }),
+        });
+        if (!response.ok) throw new Error("Erro ao adiar intenção.");
+        const outcome = (await response.json()) as LumeOutcome;
+        append("lume", outcome.message, outcome.reason);
+        await refreshContext();
+      } else {
+        setIntentions((prev) =>
+          prev.map((i) => (i.id === id ? { ...i, window_start: startIso, window_end: endIso } : i))
+        );
+      }
+    } catch (err) {
+      append("lume", "Falha ao adiar intenção.", err instanceof Error ? err.message : "Erro");
     } finally {
       setProcessing(false);
     }
@@ -778,36 +890,108 @@ export default function Home() {
               <div className="intentions-section-header">
                 <div>
                   <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Contexto Preservado</span>
-                  <h3>Intenções Declaradas no Ledger ({intentions.length})</h3>
+                  <h3>Intenções Declaradas no Ledger ({filteredIntentions.length})</h3>
                 </div>
-                <span className="intentions-subtitle">Persistência SQLite WAL imutável</span>
+                <div style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "0.2rem", background: "var(--bg-subtle)", padding: "0.15rem", borderRadius: "var(--radius-full)" }}>
+                    <button
+                      type="button"
+                      className={`filter-tab-btn ${intentionFilter === "open" ? "is-active" : ""}`}
+                      onClick={() => setIntentionFilter("open")}
+                    >
+                      Abertas
+                    </button>
+                    <button
+                      type="button"
+                      className={`filter-tab-btn ${intentionFilter === "completed" ? "is-active" : ""}`}
+                      onClick={() => setIntentionFilter("completed")}
+                    >
+                      Concluídas
+                    </button>
+                    <button
+                      type="button"
+                      className={`filter-tab-btn ${intentionFilter === "all" ? "is-active" : ""}`}
+                      onClick={() => setIntentionFilter("all")}
+                    >
+                      Todas
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-new-intention"
+                    onClick={() => setIsNewModalOpen(true)}
+                  >
+                    + Nova Intenção
+                  </button>
+                </div>
               </div>
 
-              {intentions.length > 0 ? (
+              {filteredIntentions.length > 0 ? (
                 <div className="intentions-list">
-                  {intentions.map((item) => (
-                    <article key={item.id} className={`intention-card ${item.status}`}>
-                      <div className="intention-main" style={{ width: "100%" }}>
-                        <div className="intention-title-row">
-                          <span className={`status-pill ${item.status}`}>
-                            {item.status === "open" ? "Aberta" : item.status === "active" ? "Foco Atual" : item.status}
-                          </span>
-                          <strong>{item.subject}</strong>
+                  {filteredIntentions.map((item) => {
+                    const isDeterministic = item.interpretation_source.includes("deterministic") || item.interpretation_source.includes("fallback");
+                    return (
+                      <article key={item.id} className={`intention-card ${item.status}`}>
+                        <div className="intention-main" style={{ flex: 1 }}>
+                          <div className="intention-title-row">
+                            <span className={`status-pill ${item.status}`}>
+                              {item.status === "open" ? "Aberta" : item.status === "active" ? "Foco Atual" : item.status === "completed" ? "Concluída" : "Descartada"}
+                            </span>
+                            <strong>{item.subject}</strong>
+                          </div>
+                          <div className="intention-meta">
+                            <span>Janela: {shortWindow(item.window_start)} até {shortWindow(item.window_end)}</span>
+                            <span className="meta-sep">·</span>
+                            <span>Autoridade: {item.authority === "user" ? "usuário" : item.authority}</span>
+                            <span className="meta-sep">·</span>
+                            <span className="source-tag" title={item.interpretation_source}>
+                              {isDeterministic ? "✦ Interpretação local" : item.interpretation_source}
+                            </span>
+                          </div>
                         </div>
-                        <div className="intention-meta">
-                          <span>Janela: {shortWindow(item.window_start)} até {shortWindow(item.window_end)}</span>
-                          <span className="meta-sep">·</span>
-                          <span>Autoridade: {item.authority === "user" ? "usuário" : item.authority}</span>
-                          <span className="meta-sep">·</span>
-                          <span className="source-tag">{item.interpretation_source}</span>
+
+                        <div className="intention-card-actions">
+                          {item.status !== "completed" && item.status !== "dismissed" && (
+                            <button
+                              type="button"
+                              className="btn-action-complete"
+                              disabled={processing}
+                              onClick={() => handleUpdateIntentionStatus(item.id, "completed")}
+                              title="Marcar como concluída"
+                            >
+                              ✓ Concluir
+                            </button>
+                          )}
+                          {item.status !== "completed" && item.status !== "dismissed" && (
+                            <button
+                              type="button"
+                              className="btn-action-defer"
+                              disabled={processing}
+                              onClick={() => handleDeferIntention(item.id, 24)}
+                              title="Adiar para amanhã"
+                            >
+                              ⏰ Amanhã
+                            </button>
+                          )}
+                          {item.status !== "dismissed" && (
+                            <button
+                              type="button"
+                              className="btn-action-dismiss"
+                              disabled={processing}
+                              onClick={() => handleUpdateIntentionStatus(item.id, "dismissed")}
+                              title="Descartar do horizonte"
+                            >
+                              ✕
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    </article>
-                  ))}
+                      </article>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="empty-intentions-card">
-                  <p>Nenhuma intenção pendente registrada ainda. Fale com o Lume no campo acima para preservar intenções ou organizar seu dia.</p>
+                  <p>Nenhuma intenção encontrada para este filtro. Use o formulário acima ou clique em "+ Nova Intenção".</p>
                 </div>
               )}
             </div>
@@ -1279,6 +1463,78 @@ export default function Home() {
           </span>
         </div>
       </footer>
+
+      {/* Modal de Criação Direta de Intenção */}
+      {isNewModalOpen && (
+        <div className="lume-modal-overlay" onClick={() => setIsNewModalOpen(false)}>
+          <div className="lume-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="lume-modal-header">
+              <h3>Nova Intenção Declarada</h3>
+              <button
+                type="button"
+                className="btn-action-dismiss"
+                onClick={() => setIsNewModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <form
+              className="modal-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleCreateIntentionDirect(newSubject, newStart || undefined, newEnd || undefined);
+              }}
+            >
+              <div className="form-field">
+                <label htmlFor="modal-subject">Assunto ou objetivo:</label>
+                <input
+                  id="modal-subject"
+                  type="text"
+                  required
+                  placeholder="Ex: Pagar a conta de luz, Escrever relatório..."
+                  value={newSubject}
+                  onChange={(e) => setNewSubject(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="form-field">
+                <label htmlFor="modal-start">Início da janela temporal (opcional):</label>
+                <input
+                  id="modal-start"
+                  type="datetime-local"
+                  value={newStart}
+                  onChange={(e) => setNewStart(e.target.value)}
+                />
+              </div>
+              <div className="form-field">
+                <label htmlFor="modal-end">Término da janela temporal (opcional):</label>
+                <input
+                  id="modal-end"
+                  type="datetime-local"
+                  value={newEnd}
+                  onChange={(e) => setNewEnd(e.target.value)}
+                />
+              </div>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn-discard-plan"
+                  onClick={() => setIsNewModalOpen(false)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="btn-apply-plan"
+                  disabled={!newSubject.trim() || processing}
+                >
+                  Salvar no Ledger
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

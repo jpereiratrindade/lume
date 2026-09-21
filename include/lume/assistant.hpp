@@ -24,6 +24,11 @@ public:
     Outcome apply_plan(std::uint64_t plan_id, TimePoint now);
     Outcome discard_plan(std::uint64_t plan_id, TimePoint now);
 
+    // Intention CRUD Lifecycle
+    Outcome create_intention(std::string_view subject, TimePoint window_start, TimePoint window_end, TimePoint now);
+    Outcome update_intention_status(std::uint64_t intention_id, IntentionStatus status, std::string_view reason, TimePoint now);
+    Outcome defer_intention(std::uint64_t intention_id, TimePoint new_start, TimePoint new_end, std::string_view reason, TimePoint now);
+
     // Automation and Routine Engine
     Outcome create_automation(std::string_view title,
                               std::string_view trigger_when,

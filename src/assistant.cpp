@@ -426,6 +426,177 @@ Outcome Assistant::discard_plan(std::uint64_t plan_id, TimePoint now) {
     });
 }
 
+Outcome Assistant::create_intention(std::string_view subject, TimePoint window_start, TimePoint window_end, TimePoint now) {
+    const auto clean_subject = trim(std::string(subject));
+    if (clean_subject.empty()) {
+        return {
+            .decision = "INVALID_INTENTION",
+            .message = "O assunto da intenção não pode estar vazio.",
+            .reason = "validação de entrada",
+            .changed = false,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+            .attention_candidate = compute_attention_candidate(now),
+        };
+    }
+
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        const auto expression_id = state.next_id++;
+        const auto intention_id = state.next_id++;
+
+        std::vector<EventRecord> batch;
+        batch.push_back(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::user_declared,
+            .payload = EventExpressionRecorded{
+                .id = expression_id,
+                .timestamp = now,
+                .text = clean_subject,
+            },
+        });
+
+        batch.push_back(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::user_declared,
+            .payload = EventIntentionDerived{
+                .id = intention_id,
+                .expression_id = expression_id,
+                .subject = clean_subject,
+                .window_start = window_start,
+                .window_end = window_end,
+                .precision = "direct",
+                .authority = "user",
+                .interpretation_source = "user_direct",
+            },
+        });
+
+        ledger_.append_batch(batch);
+
+        return {
+            .decision = "INTENTION_CREATED",
+            .message = "Intenção '" + clean_subject + "' registrada sob custódia local.",
+            .reason = "criação direta de intenção",
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+            .attention_candidate = compute_attention_candidate(now),
+        };
+    });
+}
+
+Outcome Assistant::update_intention_status(std::uint64_t intention_id, IntentionStatus status, std::string_view reason, TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
+                               [intention_id](const auto& item) { return item.id == intention_id; });
+        if (it == state.intentions.end()) {
+            return {
+                .decision = "INTENTION_NOT_FOUND",
+                .message = "Intenção #" + std::to_string(intention_id) + " não encontrada no ledger.",
+                .reason = "identificador inexistente",
+                .changed = false,
+                .type = "text",
+                .plan_proposal = std::nullopt,
+                .automation_proposal = std::nullopt,
+                .emitted_notifications = {},
+                .attention_candidate = compute_attention_candidate(now),
+            };
+        }
+
+        const auto reason_str = reason.empty() ? "atualização explícita do usuário" : std::string(reason);
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::derived,
+            .payload = EventIntentionStatusChanged{
+                .intention_id = intention_id,
+                .new_status = status,
+                .reason = reason_str,
+                .at = now,
+            },
+        });
+
+        std::string status_label;
+        switch (status) {
+            case IntentionStatus::open: status_label = "aberta"; break;
+            case IntentionStatus::active: status_label = "em foco ativo"; break;
+            case IntentionStatus::completed: status_label = "concluída"; break;
+            case IntentionStatus::dismissed: status_label = "descartada"; break;
+        }
+
+        return {
+            .decision = "INTENTION_STATUS_CHANGED",
+            .message = "Intenção '" + it->subject + "' marcada como " + status_label + ".",
+            .reason = reason_str,
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+            .attention_candidate = compute_attention_candidate(now),
+        };
+    });
+}
+
+Outcome Assistant::defer_intention(std::uint64_t intention_id, TimePoint new_start, TimePoint new_end, std::string_view reason, TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
+                               [intention_id](const auto& item) { return item.id == intention_id; });
+        if (it == state.intentions.end()) {
+            return {
+                .decision = "INTENTION_NOT_FOUND",
+                .message = "Intenção #" + std::to_string(intention_id) + " não encontrada no ledger.",
+                .reason = "identificador inexistente",
+                .changed = false,
+                .type = "text",
+                .plan_proposal = std::nullopt,
+                .automation_proposal = std::nullopt,
+                .emitted_notifications = {},
+                .attention_candidate = compute_attention_candidate(now),
+            };
+        }
+
+        const auto reason_str = reason.empty() ? "adiamento solicitado pelo usuário" : std::string(reason);
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::derived,
+            .payload = EventIntentionDeferred{
+                .intention_id = intention_id,
+                .new_start = new_start,
+                .new_end = new_end,
+                .precision = "direct",
+                .reason = reason_str,
+                .at = now,
+            },
+        });
+
+        return {
+            .decision = "INTENTION_DEFERRED",
+            .message = "Intenção '" + it->subject + "' adiada com sucesso.",
+            .reason = reason_str,
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+            .attention_candidate = compute_attention_candidate(now),
+        };
+    });
+}
+
 Outcome Assistant::create_automation(std::string_view title,
                                      std::string_view trigger_when,
                                      std::string_view condition_if,

@@ -447,6 +447,36 @@ void trigger_automation_manual_test(const std::filesystem::path& path) {
     expect(triggered.plan_proposal->status == "draft", "proposal must be in draft");
 }
 
+void intention_crud_lifecycle_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    // 1. Create
+    const auto created = assistant.create_intention("Estudar C++26", at("2026-09-21T09:00:00"), at("2026-09-21T11:00:00"), at("2026-09-21T08:00:00"));
+    expect(created.decision == "INTENTION_CREATED", "create intention must succeed");
+    auto state = assistant.ledger().project_state();
+    expect(state.intentions.size() == 1, "must have 1 intention");
+    const auto int_id = state.intentions.front().id;
+
+    // 2. Status Update to Active
+    const auto active_res = assistant.update_intention_status(int_id, lume::IntentionStatus::active, "foco iniciado", at("2026-09-21T09:05:00"));
+    expect(active_res.decision == "INTENTION_STATUS_CHANGED", "status update to active must succeed");
+    state = assistant.ledger().project_state();
+    expect(state.intentions.front().status == lume::IntentionStatus::active, "status must be active");
+
+    // 3. Defer
+    const auto defer_res = assistant.defer_intention(int_id, at("2026-09-22T09:00:00"), at("2026-09-22T11:00:00"), "adiado para amanhã", at("2026-09-21T10:00:00"));
+    expect(defer_res.decision == "INTENTION_DEFERRED", "defer must succeed");
+    state = assistant.ledger().project_state();
+    expect(state.intentions.front().window_start == at("2026-09-22T09:00:00"), "window start must be updated");
+
+    // 4. Complete
+    const auto comp_res = assistant.update_intention_status(int_id, lume::IntentionStatus::completed, "concluído", at("2026-09-22T11:00:00"));
+    expect(comp_res.decision == "INTENTION_STATUS_CHANGED", "status update to completed must succeed");
+    state = assistant.ledger().project_state();
+    expect(state.intentions.front().status == lume::IntentionStatus::completed, "status must be completed");
+}
+
 }  // namespace
 
 int main() {
@@ -473,6 +503,7 @@ int main() {
         epistemic_class_test(base / "epistemic.state");
         automation_creation_and_status_toggle_test(base / "auto-toggle.state");
         trigger_automation_manual_test(base / "auto-manual-trigger.state");
+        intention_crud_lifecycle_test(base / "intention-crud.state");
         tick_evaluation_morning_plan_test(base / "auto-tick-morning.state");
         tick_evaluation_no_duplicate_triggers_test(base / "auto-tick-dedup.state");
         tick_eod_review_test(base / "auto-tick-eod.state");

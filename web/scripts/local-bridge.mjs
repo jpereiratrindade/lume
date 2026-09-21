@@ -173,6 +173,42 @@ const server = createServer(async (request, response) => {
       send(request, response, 200, parseOutcome(await runLume(["create-automation", title, trigger_when, condition_if, action_then, authority, "--json"])));
       return;
     }
+    if (request.method === "POST" && request.url === "/api/intentions/create") {
+      const body = await readBody(request);
+      if (typeof body.subject !== "string" || !body.subject.trim()) {
+        send(request, response, 400, { error: "Assunto da intenção é obrigatório." });
+        return;
+      }
+      const args = ["create-intention", body.subject.trim()];
+      if (typeof body.start === "string" && body.start.trim()) args.push(body.start.trim());
+      if (typeof body.end === "string" && body.end.trim()) args.push(body.end.trim());
+      args.push("--json");
+      send(request, response, 200, parseOutcome(await runLume(args)));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/intentions/status") {
+      const body = await readBody(request);
+      if (typeof body.id !== "number" || typeof body.status !== "string") {
+        send(request, response, 400, { error: "ID e status são obrigatórios." });
+        return;
+      }
+      const cmd = body.status === "completed" ? "complete-intention" : "dismiss-intention";
+      send(request, response, 200, parseOutcome(await runLume([cmd, String(body.id), "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/intentions/defer") {
+      const body = await readBody(request);
+      if (typeof body.id !== "number") {
+        send(request, response, 400, { error: "ID da intenção é obrigatório." });
+        return;
+      }
+      const args = ["defer-intention", String(body.id)];
+      if (typeof body.start === "string" && body.start.trim()) args.push(body.start.trim());
+      if (typeof body.end === "string" && body.end.trim()) args.push(body.end.trim());
+      args.push("--json");
+      send(request, response, 200, parseOutcome(await runLume(args)));
+      return;
+    }
     if (request.method === "POST" && request.url === "/api/automations/toggle") {
       const body = await readBody(request);
       if (typeof body.id !== "number" || typeof body.status !== "string") {
