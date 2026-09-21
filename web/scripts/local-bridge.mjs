@@ -135,6 +135,30 @@ const server = createServer(async (request, response) => {
       send(request, response, 200, parseOutcome(await runLume(["observe", "--json"])));
       return;
     }
+    if (request.method === "POST" && request.url === "/api/plan") {
+      const body = await readBody(request);
+      const horizon = typeof body.horizon === "string" && body.horizon.trim() ? body.horizon.trim() : "morning";
+      send(request, response, 200, parseOutcome(await runLume(["plan", horizon, "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/apply-plan") {
+      const body = await readBody(request);
+      if (typeof body.plan_id !== "number") {
+        send(request, response, 400, { error: "ID de proposta inválido." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume(["apply-plan", String(body.plan_id), "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/discard-plan") {
+      const body = await readBody(request);
+      if (typeof body.plan_id !== "number") {
+        send(request, response, 400, { error: "ID de proposta inválido." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume(["discard-plan", String(body.plan_id), "--json"])));
+      return;
+    }
     if (request.method === "POST" && ["/api/say", "/api/reply"].includes(request.url || "")) {
       const body = await readBody(request);
       if (typeof body.text !== "string" || !body.text.trim()) {

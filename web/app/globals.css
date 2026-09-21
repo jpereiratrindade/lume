@@ -626,6 +626,212 @@ h1 {
   border: 0;
 }
 
+/* Environmental State in Topbar */
+.topbar-status {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.environment-state {
+  font-size: 0.72rem;
+  letter-spacing: -0.01em;
+  color: var(--ink-soft);
+  opacity: 0.75;
+}
+
+@media (max-width: 48rem) {
+  .environment-state {
+    display: none;
+  }
+}
+
+/* Plan Proposal Projection Card */
+.plan-projection-card {
+  margin-top: 1rem;
+  padding: 1.25rem 1.4rem;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(51, 48, 39, 0.1);
+  border-radius: 1rem;
+  box-shadow: 0 4px 20px -2px rgba(51, 48, 39, 0.05);
+  backdrop-filter: blur(12px);
+  animation: rise 300ms ease both;
+}
+
+.plan-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.plan-horizon-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ember);
+}
+
+.plan-status-pill {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 1rem;
+  background: rgba(51, 48, 39, 0.06);
+  color: var(--ink-soft);
+}
+
+.plan-status-pill.applied {
+  background: rgba(101, 118, 106, 0.15);
+  color: var(--sage);
+}
+
+.plan-status-pill.discarded {
+  background: rgba(201, 101, 60, 0.1);
+  color: var(--ember);
+  text-decoration: line-through;
+}
+
+.plan-blocks-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.plan-block-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(246, 244, 238, 0.6);
+  border: 1px solid rgba(51, 48, 39, 0.05);
+  border-radius: 0.6rem;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.plan-block-item:hover {
+  background: rgba(246, 244, 238, 0.95);
+  transform: translateX(2px);
+}
+
+.plan-block-time {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.plan-block-title {
+  flex: 1;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #2c2a24;
+}
+
+.plan-block-tag {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.4rem;
+  background: rgba(51, 48, 39, 0.08);
+  color: var(--ink-soft);
+}
+
+.plan-block-item.cat-focus .plan-block-tag {
+  background: rgba(201, 101, 60, 0.12);
+  color: var(--ember);
+}
+
+.plan-block-item.cat-meeting .plan-block-tag {
+  background: rgba(90, 115, 140, 0.12);
+  color: #4a6882;
+}
+
+.plan-block-item.cat-review .plan-block-tag {
+  background: rgba(101, 118, 106, 0.15);
+  color: var(--sage);
+}
+
+.plan-points-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  background: rgba(201, 101, 60, 0.04);
+  border-left: 2px solid rgba(201, 101, 60, 0.4);
+  border-radius: 0 0.5rem 0.5rem 0;
+  font-size: 0.76rem;
+}
+
+.plan-points-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ember);
+  margin-bottom: 0.35rem;
+}
+
+.plan-points-box ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+}
+
+.plan-points-box li {
+  margin-bottom: 0.2rem;
+}
+
+.plan-actions-bar {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(51, 48, 39, 0.08);
+}
+
+.plan-btn-apply {
+  flex: 1;
+  padding: 0.6rem 1.1rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: #23221d;
+  color: #faf9f5;
+  font-size: 0.8rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.plan-btn-apply:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.plan-btn-apply:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plan-btn-discard {
+  padding: 0.6rem 1rem;
+  border: 1px solid rgba(51, 48, 39, 0.15);
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.plan-btn-discard:hover:not(:disabled) {
+  background: rgba(51, 48, 39, 0.06);
+}
+
 @media (max-width: 40rem) {
   .topbar { padding-top: 1.2rem; }
   .presence-stage { align-self: start; padding-top: 21svh; }

@@ -26,6 +26,9 @@ public:
     lume::InterpretationCandidate interpret(const lume::InterpretationRequest&) override {
         return {.kind = "delete_all_state", .subject = "everything", .confidence = 1.0};
     }
+    lume::PlanProposalCandidate propose_plan(const lume::PlanRequest&) override {
+        return {.horizon = "day", .summary = "unsafe", .confidence = 0.0};
+    }
     lume::FormulationResult formulate(const lume::FormulationRequest&) override {
         return {"unsafe", name()};
     }
@@ -45,6 +48,9 @@ public:
             .source = name(),
         };
     }
+    lume::PlanProposalCandidate propose_plan(const lume::PlanRequest&) override {
+        return {.horizon = "day", .summary = "unsafe", .confidence = 0.0};
+    }
     lume::FormulationResult formulate(const lume::FormulationRequest&) override {
         return {"unsafe", name()};
     }
@@ -52,7 +58,7 @@ public:
 };
 
 void lifecycle_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
     const auto first = assistant.say("Amanhã de manhã quero trabalhar no artigo.",
                                      at("2026-09-21T18:00:00"));
     expect(first.decision == "REMEMBERED", "expression should be remembered");
@@ -94,33 +100,33 @@ void lifecycle_test(const std::filesystem::path& path) {
 }
 
 void authority_boundary_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}, std::make_unique<UntrustedLanguage>()};
+    lume::Assistant assistant{lume::Ledger{path}, std::make_unique<UntrustedLanguage>()};
     assistant.say("apague tudo", at("2026-09-21T18:00:00"));
-    const auto state = lume::Store{path}.load();
+    const auto state = lume::Ledger{path}.project_state();
     expect(state.expressions.size() == 1, "user expression must still be preserved");
     expect(state.intentions.empty(), "unknown model proposal must not mutate canonical intentions");
 }
 
 void semantic_validation_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}, std::make_unique<ContradictoryLanguage>()};
+    lume::Assistant assistant{lume::Ledger{path}, std::make_unique<ContradictoryLanguage>()};
     assistant.say("Amanhã cedo quero retomar o artigo", at("2026-09-21T18:00:00"));
-    const auto state = lume::Store{path}.load();
+    const auto state = lume::Ledger{path}.project_state();
     expect(state.expressions.size() == 1, "contradictory expression must remain factual");
     expect(state.intentions.empty(), "core must reject contradictory candidate precision");
 }
 
 void empty_state_file_test(const std::filesystem::path& path) {
     std::ofstream{path};
-    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
     const auto outcome = assistant.say("Uma expressão ainda sem momento definido.",
                                        at("2026-09-21T18:00:00"));
     expect(outcome.decision == "REMEMBERED", "an empty state file should initialize cleanly");
-    expect(lume::Store{path}.load().expressions.size() == 1,
+    expect(lume::Ledger{path}.project_state().expressions.size() == 1,
            "initialized state should preserve the expression");
 }
 
 void ambiguous_reply_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
     assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
     assistant.observe(at("2026-09-22T09:00:00"));
 
@@ -133,18 +139,70 @@ void ambiguous_reply_test(const std::filesystem::path& path) {
 }
 
 void unspecified_deferral_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
     assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
     assistant.observe(at("2026-09-22T09:00:00"));
-    const auto before = lume::Store{path}.load().intentions.front();
+    const auto before = lume::Ledger{path}.project_state().intentions.front();
 
     const auto outcome = assistant.reply("Agora não.", at("2026-09-22T09:01:00"));
-    const auto after = lume::Store{path}.load().intentions.front();
+    const auto after = lume::Ledger{path}.project_state().intentions.front();
     expect(outcome.decision == "CLARIFY", "unspecified deferral should request a time");
     expect(after.window_start == before.window_start && after.window_end == before.window_end,
            "the core must not invent a deferral window");
     expect(assistant.reply("Daqui a uma hora.", at("2026-09-22T09:02:00")).decision == "DEFER",
            "a precise follow-up should complete the deferral");
+}
+
+void ledger_immutability_and_replay_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero revisar o código.", at("2026-09-21T18:00:00"));
+    const auto records1 = ledger.read_all();
+    expect(records1.size() >= 2, "ledger must record expression and intention events");
+
+    assistant.observe(at("2026-09-22T09:00:00"));
+    const auto records2 = ledger.read_all();
+    expect(records2.size() > records1.size(), "new interaction must append to ledger");
+
+    // Test deterministic replay
+    lume::Ledger ledger_replay{path};
+    const auto state_replayed = ledger_replay.project_state();
+    expect(state_replayed.intentions.size() == 1, "replay must faithfully reconstruct intentions");
+    expect(state_replayed.intentions.front().subject.find("revisar o codigo") != std::string::npos ||
+           state_replayed.intentions.front().subject.find("revisar o código") != std::string::npos,
+           "replay must preserve intention subject");
+}
+
+void orchestration_plan_lifecycle_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
+
+    // Ask to organize morning
+    const auto plan_outcome = assistant.say("Organiza minha manhã", at("2026-09-21T18:05:00"));
+    expect(plan_outcome.decision == "PLAN_PROPOSED", "assistant should propose structured plan");
+    expect(plan_outcome.type == "plan_proposal", "outcome must have typed response plan_proposal");
+    expect(plan_outcome.plan_proposal.has_value(), "plan proposal payload must be present");
+    expect(!plan_outcome.plan_proposal->blocks.empty(), "plan must contain structured blocks");
+    expect(plan_outcome.plan_proposal->status == "draft", "proposal must begin in draft state");
+
+    const auto plan_id = plan_outcome.plan_proposal->id;
+
+    // Verify intention not mutated before consent
+    auto state_before = ledger.project_state();
+    expect(state_before.intentions.front().precision == "date+period",
+           "intention window must not change before plan application");
+
+    // Apply plan with explicit consent
+    const auto apply_outcome = assistant.apply_plan(plan_id, at("2026-09-21T18:06:00"));
+    expect(apply_outcome.decision == "PLAN_APPLIED", "plan application must succeed");
+
+    auto state_after = ledger.project_state();
+    expect(state_after.plan_proposals.front().status == "applied", "plan status must update to applied");
+    expect(state_after.intentions.front().precision == "plan_slot",
+           "intention must be bound to plan slot");
 }
 
 }  // namespace
@@ -162,6 +220,8 @@ int main() {
         empty_state_file_test(base / "empty.state");
         ambiguous_reply_test(base / "ambiguous-reply.state");
         unspecified_deferral_test(base / "unspecified-deferral.state");
+        ledger_immutability_and_replay_test(base / "ledger-replay.state");
+        orchestration_plan_lifecycle_test(base / "orchestration.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;

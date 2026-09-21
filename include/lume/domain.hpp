@@ -42,11 +42,42 @@ struct Interaction {
     std::string formulation_source;
 };
 
+struct PlanBlock {
+    std::string title;
+    TimePoint start{};
+    TimePoint end{};
+    std::string category{"focus"}; // focus, meeting, buffer, review
+    std::uint64_t intention_id{0};
+};
+
+struct PlanProposal {
+    std::uint64_t id{};
+    TimePoint created_at{};
+    std::string horizon; // "morning", "afternoon", "day", "week"
+    std::string summary;
+    std::vector<PlanBlock> blocks;
+    std::vector<std::string> points_of_attention;
+    std::string status{"draft"}; // draft, applied, discarded
+    std::string source;
+};
+
+struct AutomationProposal {
+    std::uint64_t id{};
+    TimePoint created_at{};
+    std::string trigger_when;
+    std::string condition_if;
+    std::string action_then;
+    std::string authority; // "suggest_only", "prepare_proposal", "execute"
+    std::string status{"pending"}; // pending, active, paused
+};
+
 struct State {
     std::uint64_t next_id{1};
     std::vector<Expression> expressions;
     std::vector<Intention> intentions;
     std::vector<Interaction> interactions;
+    std::vector<PlanProposal> plan_proposals;
+    std::vector<AutomationProposal> automation_proposals;
 };
 
 struct Outcome {
@@ -54,6 +85,9 @@ struct Outcome {
     std::string message;
     std::string reason;
     bool changed{};
+    std::string type{"text"}; // "text", "plan_proposal", "automation_proposal", "timeline_projection"
+    std::optional<PlanProposal> plan_proposal;
+    std::optional<AutomationProposal> automation_proposal;
 };
 
 std::string to_string(IntentionStatus status);

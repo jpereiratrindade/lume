@@ -268,6 +268,13 @@ public:
         }
     }
 
+    PlanProposalCandidate propose_plan(const PlanRequest& request) override {
+        // Core validation will enforce schema, for now leverage deterministic plan builder
+        auto plan = deterministic_.propose_plan(request);
+        plan.source = source_name();
+        return plan;
+    }
+
     std::string name() const override {
         return source_name() + (circuit_open_ ? " [fallback ativo]" : " [fallback disponível]");
     }

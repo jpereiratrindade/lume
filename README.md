@@ -108,12 +108,15 @@ rm ~/.config/systemd/user/lume-ollama.service
 systemctl --user daemon-reload
 ```
 
-O ciclo completo também pode ser observado deterministicamente pela CLI:
+O ciclo completo de intenções e orquestração de planos também pode ser observado deterministicamente pela CLI:
 
 ```bash
-STATE=/tmp/lume-demo.state
+STATE=/tmp/lume-demo.ledger
 ./build/lume --state "$STATE" --at 2026-09-21T18:00 say \
   "Amanhã de manhã quero trabalhar no artigo."
+./build/lume --state "$STATE" --at 2026-09-21T18:01 plan \
+  "Organiza minha manhã"
+./build/lume --state "$STATE" --at 2026-09-21T18:02 apply-plan 4
 ./build/lume --state "$STATE" --at 2026-09-22T09:00 observe
 ./build/lume --state "$STATE" --at 2026-09-22T09:01 observe
 ./build/lume --state "$STATE" --at 2026-09-22T09:02 reply \
@@ -122,18 +125,8 @@ STATE=/tmp/lume-demo.state
 ./build/lume --state "$STATE" inspect
 ```
 
-A segunda observação equivalente produz `NO_INTERACTION`: silêncio é uma decisão,
-não uma ausência de implementação.
-
-Por padrão, o estado fica em `$XDG_STATE_HOME/lume/state.lume` ou
-`~/.local/state/lume/state.lume`. `--state` e `LUME_STATE_FILE` permitem isolar
-experimentos.
+A persistência do Lume opera sobre um **Event Ledger append-only imutável** (`LUME-LEDGER-001`), garantindo integridade causal, proveniência completa de cada decisão e capacidade de replay determinístico.
 
 ## Limites honestos desta versão
 
-O fallback reconhece intencionalmente apenas a construção “amanhã de manhã quero
-…”. O modelo local entende variações linguísticas, mas o core ainda aceita apenas
-a semântica temporal implementada (`tomorrow` + `morning`). Expressões fora desse
-contrato são preservadas literalmente, sem simular compreensão. O cliente usa
-schema fechado, timeout, circuit breaker por processo e retorno automático ao
-fallback.
+O fallback reconhece expressões explícitas como “amanhã de manhã quero …” e pedidos estruturados de planejamento (“organiza minha manhã”, “organiza minha semana”). O modelo local entende variações linguísticas, mas o core C++ aceita apenas formas estruturadas validadas contra schema estrito. Nenhuma proposta é aplicada sem consentimento explícito registrado no Ledger.

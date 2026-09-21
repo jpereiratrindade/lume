@@ -78,9 +78,27 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
     body: JSON.stringify({ text: "Amanhã de manhã quero trabalhar no artigo." }),
   });
   assert.equal(saved.response.status, 200);
-  assert.deepEqual(Object.keys(saved.body).sort(), ["changed", "decision", "message", "reason"]);
+  assert.deepEqual(Object.keys(saved.body).sort(), ["changed", "decision", "message", "reason", "type"]);
   assert.equal(saved.body.decision, "REMEMBERED");
   assert.equal(saved.body.changed, true);
+
+  const planResponse = await jsonRequest(`${baseUrl}/api/plan`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ horizon: "morning" }),
+  });
+  assert.equal(planResponse.response.status, 200);
+  assert.equal(planResponse.body.type, "plan_proposal");
+  assert.ok(planResponse.body.plan_proposal);
+  assert.equal(planResponse.body.plan_proposal.status, "draft");
+
+  const applyResponse = await jsonRequest(`${baseUrl}/api/apply-plan`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ plan_id: planResponse.body.plan_proposal.id }),
+  });
+  assert.equal(applyResponse.response.status, 200);
+  assert.equal(applyResponse.body.decision, "PLAN_APPLIED");
 
   const inspected = await jsonRequest(`${baseUrl}/api/inspect`);
   assert.equal(inspected.response.status, 200);

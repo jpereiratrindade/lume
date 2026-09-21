@@ -8,6 +8,7 @@ option(LUME_WITH_LOCAL_LLM "Enable local OpenAI-compatible LLM integration" ON)
 add_library(lume_core
     src/assistant.cpp
     src/language.cpp
+    src/ledger.cpp
     src/store.cpp
 )
 target_include_directories(lume_core PUBLIC include)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lume/domain.hpp"
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -10,6 +12,7 @@ namespace lume {
 struct ContextProjection {
     std::string active_subject;
     std::vector<std::string> recent_open_subjects;
+    std::vector<Intention> open_intentions;
 };
 
 struct InterpretationRequest {
@@ -23,12 +26,28 @@ struct TemporalConstraint {
 };
 
 struct InterpretationCandidate {
-    std::string kind;
+    std::string kind; // "intention", "plan_request", "unresolved_expression", etc.
     std::string subject;
     TemporalConstraint temporal;
     std::string precision;
     double confidence{};
     std::vector<std::string> ambiguities;
+    std::string source;
+};
+
+struct PlanRequest {
+    std::string utterance;
+    std::string horizon;
+    TimePoint reference_time{};
+    std::vector<Intention> open_intentions;
+};
+
+struct PlanProposalCandidate {
+    std::string horizon;
+    std::string summary;
+    std::vector<PlanBlock> blocks;
+    std::vector<std::string> points_of_attention;
+    double confidence{1.0};
     std::string source;
 };
 
@@ -47,6 +66,7 @@ class LanguageProvider {
 public:
     virtual ~LanguageProvider() = default;
     [[nodiscard]] virtual InterpretationCandidate interpret(const InterpretationRequest& request) = 0;
+    [[nodiscard]] virtual PlanProposalCandidate propose_plan(const PlanRequest& request) = 0;
     [[nodiscard]] virtual FormulationResult formulate(const FormulationRequest& request) = 0;
     [[nodiscard]] virtual std::string name() const = 0;
 };
@@ -55,6 +75,7 @@ public:
 class DeterministicLanguage final : public LanguageProvider {
 public:
     [[nodiscard]] InterpretationCandidate interpret(const InterpretationRequest& request) override;
+    [[nodiscard]] PlanProposalCandidate propose_plan(const PlanRequest& request) override;
     [[nodiscard]] FormulationResult formulate(const FormulationRequest& request) override;
     [[nodiscard]] std::string name() const override;
 };
