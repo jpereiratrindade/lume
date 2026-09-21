@@ -105,6 +105,35 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
   assert.equal(inspected.body.intentions.length, 1);
   assert.equal(inspected.body.intentions[0].subject, "trabalhar no artigo");
 
+  // Test automation endpoints
+  const createAuto = await jsonRequest(`${baseUrl}/api/automations/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: "Organização Matinal",
+      trigger_when: "08:30",
+      condition_if: "has_open_intentions",
+      action_then: "propose_daily_plan",
+      authority: "prepare_proposal",
+    }),
+  });
+  assert.equal(createAuto.response.status, 200);
+  assert.equal(createAuto.body.decision, "AUTOMATION_CREATED");
+
+  const automationsList = await jsonRequest(`${baseUrl}/api/automations`);
+  assert.equal(automationsList.response.status, 200);
+  assert.equal(automationsList.body.automations.length, 1);
+  assert.equal(automationsList.body.automations[0].title, "Organização Matinal");
+
+  const tickResponse = await jsonRequest(`${baseUrl}/api/tick`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ at: "2026-09-22T08:30:00" }),
+  });
+  assert.equal(tickResponse.response.status, 200);
+  assert.equal(tickResponse.body.decision, "TICK_TRIGGERED");
+  assert.ok(tickResponse.body.plan_proposal);
+
   const denied = await fetch(`${baseUrl}/api/inspect`, {
     headers: { origin: "https://example.invalid" },
   });

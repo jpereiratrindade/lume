@@ -387,13 +387,27 @@ void Ledger::append_batch(std::vector<EventRecord> records) {
                     output << "PLAN_APPL\t" << event.plan_id << '\t' << hex_encode(event.reason);
                 } else if constexpr (std::is_same_v<T, EventPlanDiscarded>) {
                     output << "PLAN_DISC\t" << event.plan_id << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventAutomationProposed>) {
-                    output << "AUTO_PROP\t" << event.id << '\t'
-                           << hex_encode(event.trigger_when) << '\t' << hex_encode(event.condition_if) << '\t'
-                           << hex_encode(event.action_then) << '\t' << hex_encode(event.authority) << '\t'
+                } else if constexpr (std::is_same_v<T, EventAutomationCreated>) {
+                    output << "AUTO_CREATE\t" << event.id << '\t'
+                           << hex_encode(event.title) << '\t'
+                           << hex_encode(event.trigger_when) << '\t'
+                           << hex_encode(event.condition_if) << '\t'
+                           << hex_encode(event.action_then) << '\t'
+                           << hex_encode(event.authority) << '\t'
                            << event.status;
+                } else if constexpr (std::is_same_v<T, EventAutomationStatusChanged>) {
+                    output << "AUTO_STATUS\t" << event.automation_id << '\t'
+                           << event.new_status << '\t'
+                           << hex_encode(event.reason);
                 } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
                     output << "AUTO_TRIG\t" << event.automation_id << '\t' << hex_encode(event.explanation);
+                } else if constexpr (std::is_same_v<T, EventNotificationEmitted>) {
+                    output << "NOTIF_EMIT\t" << event.id << '\t'
+                           << event.automation_id << '\t'
+                           << hex_encode(event.title) << '\t'
+                           << hex_encode(event.message) << '\t'
+                           << hex_encode(event.action_type) << '\t'
+                           << (event.reference_id ? std::to_string(*event.reference_id) : "-");
                 }
             }, record.payload);
 
@@ -508,21 +522,41 @@ std::vector<EventRecord> Ledger::read_all() const {
                 .discarded_at = record.recorded_at,
                 .reason = hex_decode(f[5]),
             };
-        } else if (type == "AUTO_PROP" && f.size() >= 10) {
-            record.payload = EventAutomationProposed{
+        } else if (type == "AUTO_CREATE" && f.size() >= 11) {
+            record.payload = EventAutomationCreated{
                 .id = number<std::uint64_t>(f[4]),
                 .created_at = record.recorded_at,
-                .trigger_when = hex_decode(f[5]),
-                .condition_if = hex_decode(f[6]),
-                .action_then = hex_decode(f[7]),
-                .authority = hex_decode(f[8]),
-                .status = f[9],
+                .title = hex_decode(f[5]),
+                .trigger_when = hex_decode(f[6]),
+                .condition_if = hex_decode(f[7]),
+                .action_then = hex_decode(f[8]),
+                .authority = hex_decode(f[9]),
+                .status = f[10],
+            };
+        } else if (type == "AUTO_STATUS" && f.size() >= 7) {
+            record.payload = EventAutomationStatusChanged{
+                .automation_id = number<std::uint64_t>(f[4]),
+                .new_status = f[5],
+                .reason = hex_decode(f[6]),
+                .at = record.recorded_at,
             };
         } else if (type == "AUTO_TRIG" && f.size() >= 6) {
             record.payload = EventAutomationTriggered{
                 .automation_id = number<std::uint64_t>(f[4]),
                 .triggered_at = record.recorded_at,
                 .explanation = hex_decode(f[5]),
+            };
+        } else if (type == "NOTIF_EMIT" && f.size() >= 10) {
+            std::optional<std::uint64_t> ref_id;
+            if (f[9] != "-") ref_id = number<std::uint64_t>(f[9]);
+            record.payload = EventNotificationEmitted{
+                .id = number<std::uint64_t>(f[4]),
+                .automation_id = number<std::uint64_t>(f[5]),
+                .emitted_at = record.recorded_at,
+                .title = hex_decode(f[6]),
+                .message = hex_decode(f[7]),
+                .action_type = hex_decode(f[8]),
+                .reference_id = ref_id,
             };
         }
         records.push_back(std::move(record));
@@ -614,19 +648,42 @@ State Ledger::project_state() const {
                 if (it != state.plan_proposals.end()) {
                     it->status = "discarded";
                 }
-            } else if constexpr (std::is_same_v<T, EventAutomationProposed>) {
+            } else if constexpr (std::is_same_v<T, EventAutomationCreated>) {
                 max_id = std::max(max_id, event.id);
                 state.automation_proposals.push_back(AutomationProposal{
                     .id = event.id,
                     .created_at = event.created_at,
+                    .title = event.title,
                     .trigger_when = event.trigger_when,
                     .condition_if = event.condition_if,
                     .action_then = event.action_then,
                     .authority = event.authority,
                     .status = event.status,
+                    .last_triggered_at = std::nullopt,
                 });
+            } else if constexpr (std::is_same_v<T, EventAutomationStatusChanged>) {
+                auto it = std::find_if(state.automation_proposals.begin(), state.automation_proposals.end(),
+                                       [&](const auto& a) { return a.id == event.automation_id; });
+                if (it != state.automation_proposals.end()) {
+                    it->status = event.new_status;
+                }
             } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
-                // Keep record of triggered automations
+                auto it = std::find_if(state.automation_proposals.begin(), state.automation_proposals.end(),
+                                       [&](const auto& a) { return a.id == event.automation_id; });
+                if (it != state.automation_proposals.end()) {
+                    it->last_triggered_at = event.triggered_at;
+                }
+            } else if constexpr (std::is_same_v<T, EventNotificationEmitted>) {
+                max_id = std::max(max_id, event.id);
+                state.notifications.push_back(NotificationRecord{
+                    .id = event.id,
+                    .automation_id = event.automation_id,
+                    .emitted_at = event.emitted_at,
+                    .title = event.title,
+                    .message = event.message,
+                    .action_type = event.action_type,
+                    .reference_id = event.reference_id,
+                });
             }
         }, record.payload);
     }

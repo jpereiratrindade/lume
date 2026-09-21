@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -86,6 +87,34 @@ void print_outcome(const lume::Outcome& outcome, bool explain, bool json) {
             std::cout << "]}";
         }
 
+        if (outcome.automation_proposal) {
+            const auto& a = *outcome.automation_proposal;
+            std::cout << ",\"automation_proposal\":{\"id\":" << a.id
+                      << ",\"title\":\"" << json_escape(a.title) << "\""
+                      << ",\"trigger_when\":\"" << json_escape(a.trigger_when) << "\""
+                      << ",\"condition_if\":\"" << json_escape(a.condition_if) << "\""
+                      << ",\"action_then\":\"" << json_escape(a.action_then) << "\""
+                      << ",\"authority\":\"" << json_escape(a.authority) << "\""
+                      << ",\"status\":\"" << json_escape(a.status) << "\"}";
+        }
+
+        if (!outcome.emitted_notifications.empty()) {
+            std::cout << ",\"emitted_notifications\":[";
+            for (std::size_t i = 0; i < outcome.emitted_notifications.size(); ++i) {
+                const auto& n = outcome.emitted_notifications[i];
+                if (i > 0) std::cout << ",";
+                std::cout << "{\"id\":" << n.id
+                          << ",\"automation_id\":" << n.automation_id
+                          << ",\"emitted_at\":\"" << json_escape(lume::format_time(n.emitted_at)) << "\""
+                          << ",\"title\":\"" << json_escape(n.title) << "\""
+                          << ",\"message\":\"" << json_escape(n.message) << "\""
+                          << ",\"action_type\":\"" << json_escape(n.action_type) << "\"";
+                if (n.reference_id) std::cout << ",\"reference_id\":" << *n.reference_id;
+                std::cout << "}";
+            }
+            std::cout << "]";
+        }
+
         std::cout << "}\n";
         return;
     }
@@ -108,6 +137,12 @@ void print_outcome(const lume::Outcome& outcome, bool explain, bool json) {
         return;
     }
 
+    if (!outcome.emitted_notifications.empty()) {
+        for (const auto& n : outcome.emitted_notifications) {
+            std::cout << "[Notificação] " << n.title << ": " << n.message << "\n";
+        }
+    }
+
     if (!outcome.message.empty()) std::cout << outcome.message << '\n';
     else std::cout << outcome.decision << '\n';
     if (explain) std::cout << "Por quê: " << outcome.reason << '\n';
@@ -117,16 +152,21 @@ void print_help() {
     std::cout
         << "Lume — um assistente contextual local\n\n"
         << "Uso:\n"
-        << "  lume say <expressão>          preserva uma expressão\n"
-        << "  lume observe                  observa o momento e pode ficar em silêncio\n"
-        << "  lume reply <resposta>         responde à última interação\n"
-        << "  lume plan <horizonte/pedido>  gera uma proposta de planejamento estruturado\n"
-        << "  lume apply-plan <id>          aplica uma proposta aprovada ao ledger\n"
-        << "  lume discard-plan <id>        descarta uma proposta de planejamento\n"
-        << "  lume why                      explica a última interação\n"
-        << "  lume doctor                   mostra o provedor linguístico ativo\n"
-        << "  lume inspect                  mostra fatos, intenções e proveniência\n"
-        << "  lume                          inicia uma conversa\n\n"
+        << "  lume say <expressão>                    preserva uma expressão\n"
+        << "  lume observe                            observa o momento e pode ficar em silêncio\n"
+        << "  lume reply <resposta>                   responde à última interação\n"
+        << "  lume plan <horizonte/pedido>            gera uma proposta de planejamento estruturado\n"
+        << "  lume apply-plan <id>                    aplica uma proposta aprovada ao ledger\n"
+        << "  lume discard-plan <id>                  descarta uma proposta de planejamento\n"
+        << "  lume tick                               executa um ciclo de avaliação de automações\n"
+        << "  lume daemon [--interval-sec N]          executa o daemon de monitoramento contínuo\n"
+        << "  lume automations                        lista automações ativas e histórico\n"
+        << "  lume create-automation <t> <w> <c> <a>  cria nova rotina de automação\n"
+        << "  lume toggle-automation <id> <status>    ativa ou pausa uma automação\n"
+        << "  lume why                                explica a última interação\n"
+        << "  lume doctor                             mostra o provedor linguístico ativo\n"
+        << "  lume inspect                            mostra fatos, intenções e proveniência\n"
+        << "  lume                                    inicia uma conversa\n\n"
         << "Opções: --at AAAA-MM-DDTHH:MM[:SS], --state CAMINHO, --explain, --json\n";
 }
 
@@ -171,6 +211,7 @@ int main(int argc, char** argv) {
         std::optional<lume::TimePoint> specified_time;
         bool explain = false;
         bool json = false;
+        int interval_sec = 60;
 
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
@@ -181,6 +222,9 @@ int main(int argc, char** argv) {
                 if (++index >= argc) throw std::runtime_error("--at requer data e hora");
                 specified_time = lume::parse_time(argv[index]);
                 if (!specified_time) throw std::runtime_error("data inválida em --at");
+            } else if (argument == "--interval-sec") {
+                if (++index >= argc) throw std::runtime_error("--interval-sec requer segundos");
+                interval_sec = std::stoi(argv[index]);
             } else if (argument == "--explain") {
                 explain = true;
             } else if (argument == "--json") {
@@ -220,6 +264,79 @@ int main(int argc, char** argv) {
         else if (command == "discard-plan" && positional.size() > 1) {
             const auto plan_id = std::stoull(positional[1]);
             print_outcome(assistant.discard_plan(plan_id, moment), explain, json);
+        }
+        else if (command == "tick") {
+            print_outcome(assistant.tick(moment), explain, json);
+        }
+        else if (command == "automations") {
+            const auto state = assistant.ledger().project_state();
+            if (json) {
+                std::cout << "{\"automations\":[";
+                for (std::size_t i = 0; i < state.automation_proposals.size(); ++i) {
+                    const auto& a = state.automation_proposals[i];
+                    if (i > 0) std::cout << ",";
+                    std::cout << "{\"id\":" << a.id
+                              << ",\"title\":\"" << json_escape(a.title) << "\""
+                              << ",\"trigger_when\":\"" << json_escape(a.trigger_when) << "\""
+                              << ",\"condition_if\":\"" << json_escape(a.condition_if) << "\""
+                              << ",\"action_then\":\"" << json_escape(a.action_then) << "\""
+                              << ",\"authority\":\"" << json_escape(a.authority) << "\""
+                              << ",\"status\":\"" << json_escape(a.status) << "\""
+                              << ",\"last_triggered_at\":" << (a.last_triggered_at ? ("\"" + json_escape(lume::format_time(*a.last_triggered_at)) + "\"") : "null")
+                              << "}";
+                }
+                std::cout << "],\"notifications\":[";
+                for (std::size_t i = 0; i < state.notifications.size(); ++i) {
+                    const auto& n = state.notifications[i];
+                    if (i > 0) std::cout << ",";
+                    std::cout << "{\"id\":" << n.id
+                              << ",\"automation_id\":" << n.automation_id
+                              << ",\"emitted_at\":\"" << json_escape(lume::format_time(n.emitted_at)) << "\""
+                              << ",\"title\":\"" << json_escape(n.title) << "\""
+                              << ",\"message\":\"" << json_escape(n.message) << "\""
+                              << ",\"action_type\":\"" << json_escape(n.action_type) << "\"";
+                    if (n.reference_id) std::cout << ",\"reference_id\":" << *n.reference_id;
+                    std::cout << "}";
+                }
+                std::cout << "]}\n";
+            } else {
+                std::cout << "Automações Registradas (" << state.automation_proposals.size() << "):\n";
+                for (const auto& a : state.automation_proposals) {
+                    std::cout << "  #" << a.id << " [" << a.status << "] " << a.title
+                              << " | Quando: " << a.trigger_when
+                              << " | Ação: " << a.action_then << "\n";
+                }
+                if (!state.notifications.empty()) {
+                    std::cout << "\nNotificações Recentes (" << state.notifications.size() << "):\n";
+                    for (const auto& n : state.notifications) {
+                        std::cout << "  [" << lume::format_time(n.emitted_at) << "] " << n.title << ": " << n.message << "\n";
+                    }
+                }
+            }
+        }
+        else if (command == "create-automation" && positional.size() >= 5) {
+            const auto title = positional[1];
+            const auto trigger_when = positional[2];
+            const auto condition_if = positional[3];
+            const auto action_then = positional[4];
+            const auto authority = positional.size() > 5 ? positional[5] : "suggest_only";
+            print_outcome(assistant.create_automation(title, trigger_when, condition_if, action_then, authority, moment), explain, json);
+        }
+        else if (command == "toggle-automation" && positional.size() >= 3) {
+            const auto id = std::stoull(positional[1]);
+            const auto status = positional[2];
+            print_outcome(assistant.toggle_automation(id, status, moment), explain, json);
+        }
+        else if (command == "daemon") {
+            std::cout << "Lume daemon iniciado. Avaliando a cada " << interval_sec << "s...\n";
+            while (true) {
+                const auto current = now();
+                const auto tick_outcome = assistant.tick(current);
+                if (tick_outcome.changed) {
+                    print_outcome(tick_outcome, explain, json);
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(interval_sec));
+            }
         }
         else print_outcome(assistant.say(join(positional, 0), moment), explain, json);
         return 0;

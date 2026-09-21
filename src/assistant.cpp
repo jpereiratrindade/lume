@@ -55,6 +55,38 @@ std::string json_escape(std::string_view value) {
     return result;
 }
 
+bool is_same_day(TimePoint a, TimePoint b) {
+    const std::time_t raw_a = Clock::to_time_t(a);
+    const std::time_t raw_b = Clock::to_time_t(b);
+    std::tm tm_a{}, tm_b{};
+    localtime_r(&raw_a, &tm_a);
+    localtime_r(&raw_b, &tm_b);
+    return tm_a.tm_year == tm_b.tm_year && tm_a.tm_yday == tm_b.tm_yday;
+}
+
+std::pair<int, int> get_hour_minute(TimePoint tp) {
+    const std::time_t raw = Clock::to_time_t(tp);
+    std::tm tm{};
+    localtime_r(&raw, &tm);
+    return {tm.tm_hour, tm.tm_min};
+}
+
+std::pair<int, int> parse_time_spec(std::string_view spec) {
+    auto pos = spec.find(':');
+    if (pos != std::string_view::npos && spec.substr(0, pos) == "daily_at") {
+        spec = spec.substr(pos + 1);
+    }
+    auto colon = spec.find(':');
+    if (colon == std::string_view::npos) return {-1, -1};
+    try {
+        int h = std::stoi(std::string(spec.substr(0, colon)));
+        int m = std::stoi(std::string(spec.substr(colon + 1)));
+        return {h, m};
+    } catch (...) {
+        return {-1, -1};
+    }
+}
+
 std::string quote(std::string_view value) { return "\"" + json_escape(value) + "\""; }
 
 }  // namespace
@@ -294,6 +326,305 @@ Outcome Assistant::discard_plan(std::uint64_t plan_id, TimePoint now) {
             .type = "text",
             .plan_proposal = std::nullopt,
             .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+        };
+    });
+}
+
+Outcome Assistant::create_automation(std::string_view title,
+                                     std::string_view trigger_when,
+                                     std::string_view condition_if,
+                                     std::string_view action_then,
+                                     std::string_view authority,
+                                     TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        const auto auto_id = state.next_id++;
+
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .payload = EventAutomationCreated{
+                .id = auto_id,
+                .created_at = now,
+                .title = std::string(title),
+                .trigger_when = std::string(trigger_when),
+                .condition_if = std::string(condition_if),
+                .action_then = std::string(action_then),
+                .authority = authority.empty() ? "suggest_only" : std::string(authority),
+                .status = "active",
+            },
+        });
+
+        return {
+            .decision = "AUTOMATION_CREATED",
+            .message = "Rotina de automação #" + std::to_string(auto_id) + " criada com sucesso.",
+            .reason = "configuração de rotina pelo usuário",
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = AutomationProposal{
+                .id = auto_id,
+                .created_at = now,
+                .title = std::string(title),
+                .trigger_when = std::string(trigger_when),
+                .condition_if = std::string(condition_if),
+                .action_then = std::string(action_then),
+                .authority = authority.empty() ? "suggest_only" : std::string(authority),
+                .status = "active",
+                .last_triggered_at = std::nullopt,
+            },
+            .emitted_notifications = {},
+        };
+    });
+}
+
+Outcome Assistant::toggle_automation(std::uint64_t automation_id, std::string_view new_status, TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.automation_proposals.begin(), state.automation_proposals.end(),
+                               [&](const auto& a) { return a.id == automation_id; });
+        if (it == state.automation_proposals.end()) {
+            return {"NOT_FOUND", "Automação não encontrada.", "id inexistente", false, "text", std::nullopt, std::nullopt, {}};
+        }
+
+        std::string status_str = std::string(new_status);
+        if (status_str != "active" && status_str != "paused" && status_str != "discarded") {
+            return {"INVALID_STATUS", "Status inválido. Use active, paused ou discarded.", "status inválido", false, "text", std::nullopt, std::nullopt, {}};
+        }
+
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .payload = EventAutomationStatusChanged{
+                .automation_id = automation_id,
+                .new_status = status_str,
+                .reason = "ação explícita do usuário",
+                .at = now,
+            },
+        });
+
+        return {
+            .decision = "AUTOMATION_STATUS_CHANGED",
+            .message = "Automação #" + std::to_string(automation_id) + " alterada para " + status_str + ".",
+            .reason = "atualização de status",
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
+        };
+    });
+}
+
+Outcome Assistant::tick(TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        std::vector<EventRecord> batch;
+        std::vector<NotificationRecord> emitted;
+        std::optional<PlanProposal> generated_plan;
+        std::uint64_t next_id = state.next_id;
+
+        const auto [now_hour, now_min] = get_hour_minute(now);
+
+        for (const auto& auto_item : state.automation_proposals) {
+            if (auto_item.status != "active") continue;
+
+            bool should_trigger = false;
+            std::string trigger_reason;
+
+            // Check if triggered today
+            if (auto_item.last_triggered_at && is_same_day(*auto_item.last_triggered_at, now)) {
+                continue;
+            }
+
+            const auto [spec_hour, spec_min] = parse_time_spec(auto_item.trigger_when);
+            if (spec_hour >= 0) {
+                if (now_hour == spec_hour && now_min == spec_min) {
+                    if (auto_item.condition_if == "has_open_intentions") {
+                        bool has_open = std::any_of(state.intentions.begin(), state.intentions.end(),
+                                                    [](const auto& i) { return i.status == IntentionStatus::open; });
+                        if (has_open) {
+                            should_trigger = true;
+                            trigger_reason = "horário agendado com intenções abertas pendentes";
+                        }
+                    } else if (auto_item.condition_if == "always" || auto_item.condition_if.empty()) {
+                        should_trigger = true;
+                        trigger_reason = "horário programado";
+                    }
+                }
+            } else if (auto_item.trigger_when == "on_overdue") {
+                bool has_overdue = std::any_of(state.intentions.begin(), state.intentions.end(),
+                                               [&](const auto& i) {
+                                                   return i.status == IntentionStatus::open && i.window_end < now;
+                                               });
+                if (has_overdue) {
+                    should_trigger = true;
+                    trigger_reason = "intenções abertas ultrapassaram a janela planejada";
+                }
+            }
+
+            if (should_trigger) {
+                batch.push_back(EventRecord{
+                    .sequence_number = 0,
+                    .recorded_at = now,
+                    .authority = "core",
+                    .payload = EventAutomationTriggered{
+                        .automation_id = auto_item.id,
+                        .triggered_at = now,
+                        .explanation = trigger_reason,
+                    },
+                });
+
+                if (auto_item.action_then == "propose_daily_plan") {
+                    std::vector<Intention> open_items;
+                    for (const auto& item : state.intentions) {
+                        if (item.status == IntentionStatus::open) open_items.push_back(item);
+                    }
+                    auto candidate = language_->propose_plan(PlanRequest{
+                        .utterance = "Organizar manhã",
+                        .horizon = "morning",
+                        .reference_time = now,
+                        .open_intentions = std::move(open_items),
+                    });
+
+                    PlanProposal proposal{
+                        .id = next_id++,
+                        .created_at = now,
+                        .horizon = candidate.horizon,
+                        .summary = candidate.summary,
+                        .blocks = std::move(candidate.blocks),
+                        .points_of_attention = std::move(candidate.points_of_attention),
+                        .status = "draft",
+                        .source = "automation:" + std::to_string(auto_item.id),
+                    };
+
+                    batch.push_back(EventRecord{
+                        .sequence_number = 0,
+                        .recorded_at = now,
+                        .authority = "core",
+                        .payload = EventPlanProposed{
+                            .id = proposal.id,
+                            .created_at = now,
+                            .horizon = proposal.horizon,
+                            .summary = proposal.summary,
+                            .blocks = proposal.blocks,
+                            .points_of_attention = proposal.points_of_attention,
+                            .status = proposal.status,
+                            .source = proposal.source,
+                        },
+                    });
+
+                    const auto notif_id = next_id++;
+                    NotificationRecord notif{
+                        .id = notif_id,
+                        .automation_id = auto_item.id,
+                        .emitted_at = now,
+                        .title = "Proposta de Organização do Dia",
+                        .message = proposal.summary,
+                        .action_type = "plan_proposal",
+                        .reference_id = proposal.id,
+                    };
+                    batch.push_back(EventRecord{
+                        .sequence_number = 0,
+                        .recorded_at = now,
+                        .authority = "core",
+                        .payload = EventNotificationEmitted{
+                            .id = notif.id,
+                            .automation_id = notif.automation_id,
+                            .emitted_at = notif.emitted_at,
+                            .title = notif.title,
+                            .message = notif.message,
+                            .action_type = notif.action_type,
+                            .reference_id = notif.reference_id,
+                        },
+                    });
+                    emitted.push_back(notif);
+                    generated_plan = proposal;
+                } else if (auto_item.action_then == "ask_eod_review") {
+                    std::size_t open_count = std::count_if(state.intentions.begin(), state.intentions.end(),
+                                                          [](const auto& i) { return i.status == IntentionStatus::open; });
+                    const auto notif_id = next_id++;
+                    std::string msg = "Você tem " + std::to_string(open_count) + " intenção(ões) em aberto. Deseja revisá-las ou adiar para amanhã?";
+                    NotificationRecord notif{
+                        .id = notif_id,
+                        .automation_id = auto_item.id,
+                        .emitted_at = now,
+                        .title = "Fechamento do Dia",
+                        .message = msg,
+                        .action_type = "eod_prompt",
+                        .reference_id = std::nullopt,
+                    };
+                    batch.push_back(EventRecord{
+                        .sequence_number = 0,
+                        .recorded_at = now,
+                        .authority = "core",
+                        .payload = EventNotificationEmitted{
+                            .id = notif.id,
+                            .automation_id = notif.automation_id,
+                            .emitted_at = notif.emitted_at,
+                            .title = notif.title,
+                            .message = notif.message,
+                            .action_type = notif.action_type,
+                            .reference_id = notif.reference_id,
+                        },
+                    });
+                    emitted.push_back(notif);
+                } else {
+                    const auto notif_id = next_id++;
+                    NotificationRecord notif{
+                        .id = notif_id,
+                        .automation_id = auto_item.id,
+                        .emitted_at = now,
+                        .title = auto_item.title.empty() ? "Lembrete do Lume" : auto_item.title,
+                        .message = "Disparo da rotina: " + auto_item.action_then,
+                        .action_type = "info",
+                        .reference_id = std::nullopt,
+                    };
+                    batch.push_back(EventRecord{
+                        .sequence_number = 0,
+                        .recorded_at = now,
+                        .authority = "core",
+                        .payload = EventNotificationEmitted{
+                            .id = notif.id,
+                            .automation_id = notif.automation_id,
+                            .emitted_at = notif.emitted_at,
+                            .title = notif.title,
+                            .message = notif.message,
+                            .action_type = notif.action_type,
+                            .reference_id = notif.reference_id,
+                        },
+                    });
+                    emitted.push_back(notif);
+                }
+            }
+        }
+
+        if (!batch.empty()) {
+            ledger_.append_batch(std::move(batch));
+            return {
+                .decision = "TICK_TRIGGERED",
+                .message = std::to_string(emitted.size()) + " automação(ões) disparada(s).",
+                .reason = "ciclo de avaliação do daemon",
+                .changed = true,
+                .type = generated_plan ? "plan_proposal" : "notifications",
+                .plan_proposal = generated_plan,
+                .automation_proposal = std::nullopt,
+                .emitted_notifications = emitted,
+            };
+        }
+
+        return {
+            .decision = "TICK_IDLE",
+            .message = "Nenhuma automação necessita de disparo no momento.",
+            .reason = "condições de disparo não atingidas",
+            .changed = false,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+            .emitted_notifications = {},
         };
     });
 }

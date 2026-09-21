@@ -255,6 +255,98 @@ void orchestration_plan_lifecycle_test(const std::filesystem::path& path) {
     expect(reapply.decision == "ALREADY_APPLIED", "cannot reapply applied terminal plan");
 }
 
+void automation_creation_and_status_toggle_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    const auto created = assistant.create_automation("Organização Matinal", "08:30", "has_open_intentions",
+                                                    "propose_daily_plan", "prepare_proposal",
+                                                    at("2026-09-21T18:00:00"));
+    expect(created.decision == "AUTOMATION_CREATED", "should create automation");
+    expect(created.automation_proposal.has_value(), "should return created proposal");
+    expect(created.automation_proposal->status == "active", "status should be active");
+
+    const auto auto_id = created.automation_proposal->id;
+
+    // Toggle to paused
+    const auto toggled = assistant.toggle_automation(auto_id, "paused", at("2026-09-21T18:01:00"));
+    expect(toggled.decision == "AUTOMATION_STATUS_CHANGED", "status change should succeed");
+
+    auto state = ledger.project_state();
+    expect(state.automation_proposals.front().status == "paused", "state must reflect paused");
+
+    // Toggle back to active
+    assistant.toggle_automation(auto_id, "active", at("2026-09-21T18:02:00"));
+    state = ledger.project_state();
+    expect(state.automation_proposals.front().status == "active", "state must reflect active");
+}
+
+void tick_evaluation_morning_plan_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    // User adds an intention
+    assistant.say("Amanhã de manhã quero finalizar o relatório.", at("2026-09-21T18:00:00"));
+
+    // Create daily routine at 08:30
+    assistant.create_automation("Organização Matinal", "08:30", "has_open_intentions",
+                               "propose_daily_plan", "prepare_proposal",
+                               at("2026-09-21T18:01:00"));
+
+    // Tick before 08:30 (e.g. 08:00) -> IDLE
+    const auto tick_early = assistant.tick(at("2026-09-22T08:00:00"));
+    expect(tick_early.decision == "TICK_IDLE", "must be idle before trigger time");
+    expect(tick_early.emitted_notifications.empty(), "no notifications when idle");
+
+    // Tick at 08:30 -> TRIGGERED
+    const auto tick_trigger = assistant.tick(at("2026-09-22T08:30:00"));
+    expect(tick_trigger.decision == "TICK_TRIGGERED", "must trigger at scheduled time");
+    expect(!tick_trigger.emitted_notifications.empty(), "must emit notification");
+    expect(tick_trigger.plan_proposal.has_value(), "must generate plan proposal");
+    expect(tick_trigger.plan_proposal->status == "draft", "proposal must be in draft");
+
+    const auto state = ledger.project_state();
+    expect(state.notifications.size() == 1, "ledger must record emitted notification");
+    expect(state.plan_proposals.size() == 1, "ledger must record generated plan proposal");
+    expect(state.automation_proposals.front().last_triggered_at.has_value(), "must record last_triggered_at");
+}
+
+void tick_evaluation_no_duplicate_triggers_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero revisar o código.", at("2026-09-21T18:00:00"));
+    assistant.create_automation("Organização Matinal", "08:30", "has_open_intentions",
+                               "propose_daily_plan", "prepare_proposal",
+                               at("2026-09-21T18:01:00"));
+
+    // First trigger at 08:30
+    assistant.tick(at("2026-09-22T08:30:00"));
+
+    // Second tick at 08:30 in same minute or same day
+    const auto tick_second = assistant.tick(at("2026-09-22T08:30:30"));
+    expect(tick_second.decision == "TICK_IDLE", "must not trigger twice on the same day");
+
+    const auto state = ledger.project_state();
+    expect(state.notifications.size() == 1, "notifications count must remain 1");
+    expect(state.plan_proposals.size() == 1, "plan proposals count must remain 1");
+}
+
+void tick_eod_review_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero escrever artigo.", at("2026-09-21T18:00:00"));
+    assistant.create_automation("Fechamento do Dia", "18:00", "has_open_intentions",
+                               "ask_eod_review", "suggest_only",
+                               at("2026-09-21T18:01:00"));
+
+    const auto tick_eod = assistant.tick(at("2026-09-22T18:00:00"));
+    expect(tick_eod.decision == "TICK_TRIGGERED", "eod routine must trigger");
+    expect(tick_eod.emitted_notifications.size() == 1, "one notification emitted");
+    expect(tick_eod.emitted_notifications.front().action_type == "eod_prompt", "action_type must be eod_prompt");
+}
+
 }  // namespace
 
 int main() {
@@ -274,6 +366,10 @@ int main() {
         legacy_migration_test(base / "legacy.state");
         monotonic_sequence_test(base / "sequence.state");
         orchestration_plan_lifecycle_test(base / "orchestration.state");
+        automation_creation_and_status_toggle_test(base / "auto-toggle.state");
+        tick_evaluation_morning_plan_test(base / "auto-tick-morning.state");
+        tick_evaluation_no_duplicate_triggers_test(base / "auto-tick-dedup.state");
+        tick_eod_review_test(base / "auto-tick-eod.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;

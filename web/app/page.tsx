@@ -58,6 +58,27 @@ type LumeState = {
   plan_proposals?: PlanProposal[];
 };
 
+type AutomationProposal = {
+  id: number;
+  title: string;
+  trigger_when: string;
+  condition_if: string;
+  action_then: string;
+  authority: string;
+  status: "active" | "paused" | "discarded";
+  last_triggered_at: string | null;
+};
+
+type NotificationRecord = {
+  id: number;
+  automation_id: number;
+  emitted_at: string;
+  title: string;
+  message: string;
+  action_type: string;
+  reference_id?: number;
+};
+
 type LumeOutcome = {
   decision: string;
   message: string;
@@ -65,6 +86,8 @@ type LumeOutcome = {
   changed: boolean;
   type?: string;
   plan_proposal?: PlanProposal;
+  automation_proposal?: AutomationProposal;
+  emitted_notifications?: NotificationRecord[];
 };
 
 const bridge = process.env.NEXT_PUBLIC_LUME_BRIDGE_URL ?? "http://127.0.0.1:4141";
@@ -127,6 +150,8 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
   const [messages, setMessages] = useState<Message[]>([]);
   const [intentions, setIntentions] = useState<Intention[]>([]);
+  const [automations, setAutomations] = useState<AutomationProposal[]>([]);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [ledgerEventsCount, setLedgerEventsCount] = useState<number>(0);
   const [activePlan, setActivePlan] = useState<PlanProposal | null>(null);
   const [draft, setDraft] = useState("");
@@ -146,17 +171,24 @@ export default function Home() {
   async function refreshContext() {
     try {
       const response = await fetch(`${bridge}/api/inspect`);
-      if (!response.ok) return;
-      const state = (await response.json()) as LumeState;
-      setIntentions(state.intentions ?? []);
-      if (typeof state.ledger_events_count === "number") {
-        setLedgerEventsCount(state.ledger_events_count);
-      }
-      if (state.plan_proposals && state.plan_proposals.length > 0) {
-        const latestPlan = state.plan_proposals[state.plan_proposals.length - 1];
-        if (latestPlan.status === "draft") {
-          setActivePlan(latestPlan);
+      if (response.ok) {
+        const state = (await response.json()) as LumeState;
+        setIntentions(state.intentions ?? []);
+        if (typeof state.ledger_events_count === "number") {
+          setLedgerEventsCount(state.ledger_events_count);
         }
+        if (state.plan_proposals && state.plan_proposals.length > 0) {
+          const latestPlan = state.plan_proposals[state.plan_proposals.length - 1];
+          if (latestPlan.status === "draft") {
+            setActivePlan(latestPlan);
+          }
+        }
+      }
+      const autoRes = await fetch(`${bridge}/api/automations`);
+      if (autoRes.ok) {
+        const autoData = await autoRes.json();
+        setAutomations(autoData.automations || []);
+        setNotifications(autoData.notifications || []);
       }
     } catch {
       // Offline / preview mode fallback
@@ -344,6 +376,97 @@ export default function Home() {
       }
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Erro ao descartar.");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleCreateAutomation(
+    title: string,
+    trigger_when: string,
+    condition_if: string,
+    action_then: string,
+    authority: string,
+  ) {
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/automations/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, trigger_when, condition_if, action_then, authority }),
+        });
+        if (!response.ok) throw new Error("Erro ao registrar automação no runtime.");
+        const result = (await response.json()) as LumeOutcome;
+        append("lume", result.message, result.reason);
+        await refreshContext();
+      } else {
+        const newAuto: AutomationProposal = {
+          id: Date.now(),
+          title,
+          trigger_when,
+          condition_if,
+          action_then,
+          authority,
+          status: "active",
+          last_triggered_at: null,
+        };
+        setAutomations((prev) => [...prev, newAuto]);
+        append("lume", `Rotina "${title}" ativada no ambiente de prévia.`);
+      }
+    } catch (error) {
+      append("lume", "Não foi possível criar a automação.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleToggleAutomation(id: number, currentStatus: string) {
+    setProcessing(true);
+    const nextStatus = currentStatus === "active" ? "paused" : "active";
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/automations/toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, status: nextStatus }),
+        });
+        if (!response.ok) throw new Error("Erro ao alterar status da automação.");
+        await refreshContext();
+      } else {
+        setAutomations((prev) =>
+          prev.map((a) => (a.id === id ? { ...a, status: nextStatus as "active" | "paused" } : a))
+        );
+      }
+    } catch (error) {
+      append("lume", "Falha ao alterar status.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleTriggerTick() {
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/tick`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error("Erro ao executar ciclo de avaliação do daemon.");
+        const result = (await response.json()) as LumeOutcome;
+        if (result.plan_proposal) {
+          setActivePlan(result.plan_proposal);
+          setViewMode("plan");
+        }
+        append("lume", result.message, result.reason, result.plan_proposal);
+        await refreshContext();
+      } else {
+        append("lume", "Ciclo de avaliação executado.", "Nenhum gatilho pendente.");
+      }
+    } catch (error) {
+      append("lume", "Falha ao avaliar gatilhos.", error instanceof Error ? error.message : "Erro");
     } finally {
       setProcessing(false);
     }
@@ -711,13 +834,185 @@ export default function Home() {
               <p>Comportamentos que o Lume executa com permissão explícita, sem surpresas nem ações invisíveis.</p>
             </div>
 
-            <div className="factual-empty-card">
-              <span className="factual-badge">Estado Factual</span>
-              <h3>Nenhuma automação foi ativada ainda.</h3>
-              <p>
-                O Lume não executa comportamentos autônomos sem permissão explícita registrada no Ledger. Quando você conceder autoridade para um comportamento recorrente (como proteção de concentração ou retomada matinal), ele aparecerá aqui com sua especificação e histórico factual de execuções.
-              </p>
+            {/* Ações Rápidas de Daemon */}
+            <div className="automation-actions-bar">
+              <button
+                type="button"
+                className="btn-tick"
+                disabled={processing}
+                onClick={handleTriggerTick}
+              >
+                ⚡ Executar ciclo de avaliação (Tick)
+              </button>
+              <span className="tick-info">
+                {automations.filter((a) => a.status === "active").length} rotina(s) ativa(s) no Ledger local.
+              </span>
             </div>
+
+            {/* Rotinas Ativas */}
+            {automations.length > 0 ? (
+              <div className="automations-grid">
+                {automations.map((item) => (
+                  <article key={item.id} className={`automation-card ${item.status}`}>
+                    <div className="auto-header">
+                      <span className={`auto-status-dot ${item.status === "active" ? "is-live" : ""}`} />
+                      <strong>{item.title || "Rotina de Automação"}</strong>
+                      <span className="auto-tag">#{item.id} · {item.status === "active" ? "Ativa" : "Pausada"}</span>
+                    </div>
+                    <div className="auto-specs">
+                      <div className="spec-item">
+                        <span className="spec-label">Quando:</span>
+                        <span className="spec-value">{item.trigger_when}</span>
+                      </div>
+                      <div className="spec-item">
+                        <span className="spec-label">Condição:</span>
+                        <span className="spec-value">{item.condition_if || "sempre"}</span>
+                      </div>
+                      <div className="spec-item">
+                        <span className="spec-label">Ação:</span>
+                        <span className="spec-value">{item.action_then}</span>
+                      </div>
+                      <div className="spec-item">
+                        <span className="spec-label">Autoridade:</span>
+                        <span className="spec-value">{item.authority}</span>
+                      </div>
+                    </div>
+                    <div className="auto-footer">
+                      <span className="last-trigger">
+                        {item.last_triggered_at
+                          ? `Último disparo: ${formatBlockTime(item.last_triggered_at)}`
+                          : "Ainda não disparada"}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-toggle-auto"
+                        disabled={processing}
+                        onClick={() => handleToggleAutomation(item.id, item.status)}
+                      >
+                        {item.status === "active" ? "Pausar" : "Ativar"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="factual-empty-card">
+                <span className="factual-badge">Estado Factual</span>
+                <h3>Nenhuma automação personalizada foi ativada ainda.</h3>
+                <p>
+                  O Lume não executa comportamentos autônomos sem permissão explícita registrada no Ledger. Ative um dos modelos abaixo ou crie uma rotina via terminal com <code>lume create-automation</code>.
+                </p>
+              </div>
+            )}
+
+            {/* Modelos Recomendados de Rotinas */}
+            <div className="templates-section">
+              <h3>Modelos de Rotinas Disponíveis</h3>
+              <p className="templates-desc">Ative rotinas com um clique para permitir que o Lume prepare sugestões proativas.</p>
+              <div className="templates-grid">
+                <article className="template-card">
+                  <div className="tmpl-header">
+                    <h4>Organização Matinal</h4>
+                    <span className="tmpl-badge">08:30</span>
+                  </div>
+                  <p>Prepara uma proposta de planejamento matinal em rascunho sempre que houver intenções abertas.</p>
+                  <button
+                    type="button"
+                    className="btn-enable-template"
+                    disabled={processing}
+                    onClick={() =>
+                      handleCreateAutomation(
+                        "Organização Matinal",
+                        "08:30",
+                        "has_open_intentions",
+                        "propose_daily_plan",
+                        "prepare_proposal",
+                      )
+                    }
+                  >
+                    + Ativar Rotina
+                  </button>
+                </article>
+
+                <article className="template-card">
+                  <div className="tmpl-header">
+                    <h4>Fechamento do Dia</h4>
+                    <span className="tmpl-badge">18:00</span>
+                  </div>
+                  <p>Pergunta de forma serena se as intenções do dia foram concluídas ou devem ser adiadas.</p>
+                  <button
+                    type="button"
+                    className="btn-enable-template"
+                    disabled={processing}
+                    onClick={() =>
+                      handleCreateAutomation(
+                        "Fechamento do Dia",
+                        "18:00",
+                        "has_open_intentions",
+                        "ask_eod_review",
+                        "suggest_only",
+                      )
+                    }
+                  >
+                    + Ativar Rotina
+                  </button>
+                </article>
+
+                <article className="template-card">
+                  <div className="tmpl-header">
+                    <h4>Aviso de Foco Iminente</h4>
+                    <span className="tmpl-badge">15 min antes</span>
+                  </div>
+                  <p>Notifica silenciosamente antes de blocos de foco aplicados na agenda.</p>
+                  <button
+                    type="button"
+                    className="btn-enable-template"
+                    disabled={processing}
+                    onClick={() =>
+                      handleCreateAutomation(
+                        "Aviso de Foco Iminente",
+                        "15m",
+                        "always",
+                        "notify_block",
+                        "suggest_only",
+                      )
+                    }
+                  >
+                    + Ativar Rotina
+                  </button>
+                </article>
+              </div>
+            </div>
+
+            {/* Feed de Notificações do Daemon */}
+            {notifications.length > 0 && (
+              <div className="notifications-section">
+                <h3>Histórico de Disparos e Notificações</h3>
+                <div className="notifications-list">
+                  {notifications.map((notif) => (
+                    <div key={notif.id} className="notification-item">
+                      <div className="notif-time">{formatBlockTime(notif.emitted_at)}</div>
+                      <div className="notif-body">
+                        <strong>{notif.title}</strong>
+                        <p>{notif.message}</p>
+                      </div>
+                      {notif.action_type === "plan_proposal" && (
+                        <button
+                          type="button"
+                          className="btn-view-notif-plan"
+                          onClick={() => {
+                            setViewMode("plan");
+                            if (!activePlan) void triggerPlan("morning");
+                          }}
+                        >
+                          Ver Proposta
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         )}
 

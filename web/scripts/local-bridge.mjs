@@ -159,6 +159,38 @@ const server = createServer(async (request, response) => {
       send(request, response, 200, parseOutcome(await runLume(["discard-plan", String(body.plan_id), "--json"])));
       return;
     }
+    if (request.method === "GET" && request.url === "/api/automations") {
+      send(request, response, 200, JSON.parse(await runLume(["automations", "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/automations/create") {
+      const body = await readBody(request);
+      const title = typeof body.title === "string" ? body.title.trim() : "Nova Rotina";
+      const trigger_when = typeof body.trigger_when === "string" ? body.trigger_when.trim() : "08:30";
+      const condition_if = typeof body.condition_if === "string" ? body.condition_if.trim() : "has_open_intentions";
+      const action_then = typeof body.action_then === "string" ? body.action_then.trim() : "propose_daily_plan";
+      const authority = typeof body.authority === "string" ? body.authority.trim() : "suggest_only";
+      send(request, response, 200, parseOutcome(await runLume(["create-automation", title, trigger_when, condition_if, action_then, authority, "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/automations/toggle") {
+      const body = await readBody(request);
+      if (typeof body.id !== "number" || typeof body.status !== "string") {
+        send(request, response, 400, { error: "Parâmetros de automação inválidos." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume(["toggle-automation", String(body.id), body.status.trim(), "--json"])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/tick") {
+      const body = await readBody(request);
+      const args = ["tick", "--json"];
+      if (typeof body.at === "string" && body.at.trim()) {
+        args.push("--at", body.at.trim());
+      }
+      send(request, response, 200, parseOutcome(await runLume(args)));
+      return;
+    }
     if (request.method === "POST" && ["/api/say", "/api/reply"].includes(request.url || "")) {
       const body = await readBody(request);
       if (typeof body.text !== "string" || !body.text.trim()) {

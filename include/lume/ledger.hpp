@@ -81,20 +81,38 @@ struct EventPlanDiscarded {
     std::string reason;
 };
 
-struct EventAutomationProposed {
+struct EventAutomationCreated {
     std::uint64_t id{};
     TimePoint created_at{};
+    std::string title;
     std::string trigger_when;
     std::string condition_if;
     std::string action_then;
-    std::string authority;
-    std::string status{"pending"}; // pending, active, paused
+    std::string authority{"suggest_only"};
+    std::string status{"active"}; // "active", "paused", "discarded"
+};
+
+struct EventAutomationStatusChanged {
+    std::uint64_t automation_id{};
+    std::string new_status;
+    std::string reason;
+    TimePoint at{};
 };
 
 struct EventAutomationTriggered {
     std::uint64_t automation_id{};
     TimePoint triggered_at{};
     std::string explanation;
+};
+
+struct EventNotificationEmitted {
+    std::uint64_t id{};
+    std::uint64_t automation_id{};
+    TimePoint emitted_at{};
+    std::string title;
+    std::string message;
+    std::string action_type{"info"};
+    std::optional<std::uint64_t> reference_id;
 };
 
 using EventPayload = std::variant<
@@ -106,8 +124,10 @@ using EventPayload = std::variant<
     EventPlanProposed,
     EventPlanApplied,
     EventPlanDiscarded,
-    EventAutomationProposed,
-    EventAutomationTriggered
+    EventAutomationCreated,
+    EventAutomationStatusChanged,
+    EventAutomationTriggered,
+    EventNotificationEmitted
 >;
 
 struct EventRecord {

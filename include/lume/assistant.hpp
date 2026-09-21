@@ -24,6 +24,16 @@ public:
     Outcome apply_plan(std::uint64_t plan_id, TimePoint now);
     Outcome discard_plan(std::uint64_t plan_id, TimePoint now);
 
+    // Automation and Routine Engine
+    Outcome create_automation(std::string_view title,
+                              std::string_view trigger_when,
+                              std::string_view condition_if,
+                              std::string_view action_then,
+                              std::string_view authority,
+                              TimePoint now);
+    Outcome toggle_automation(std::uint64_t automation_id, std::string_view new_status, TimePoint now);
+    Outcome tick(TimePoint now);
+
     [[nodiscard]] std::string explain_last() const;
     [[nodiscard]] std::string inspect() const;
     [[nodiscard]] std::string language_name() const;

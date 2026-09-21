@@ -64,11 +64,23 @@ struct PlanProposal {
 struct AutomationProposal {
     std::uint64_t id{};
     TimePoint created_at{};
+    std::string title;
     std::string trigger_when;
     std::string condition_if;
     std::string action_then;
-    std::string authority; // "suggest_only", "prepare_proposal", "execute"
-    std::string status{"pending"}; // pending, active, paused
+    std::string authority{"suggest_only"}; // "suggest_only", "prepare_proposal", "execute"
+    std::string status{"active"}; // "active", "paused", "discarded"
+    std::optional<TimePoint> last_triggered_at;
+};
+
+struct NotificationRecord {
+    std::uint64_t id{};
+    std::uint64_t automation_id{};
+    TimePoint emitted_at{};
+    std::string title;
+    std::string message;
+    std::string action_type{"info"}; // "info", "plan_proposal", "eod_prompt"
+    std::optional<std::uint64_t> reference_id; // e.g. plan_proposal_id
 };
 
 struct State {
@@ -78,16 +90,18 @@ struct State {
     std::vector<Interaction> interactions;
     std::vector<PlanProposal> plan_proposals;
     std::vector<AutomationProposal> automation_proposals;
+    std::vector<NotificationRecord> notifications;
 };
 
 struct Outcome {
-    std::string decision;
-    std::string message;
-    std::string reason;
-    bool changed{};
-    std::string type{"text"}; // "text", "plan_proposal", "automation_proposal", "timeline_projection"
-    std::optional<PlanProposal> plan_proposal;
-    std::optional<AutomationProposal> automation_proposal;
+    std::string decision{};
+    std::string message{};
+    std::string reason{};
+    bool changed{false};
+    std::string type{"text"}; // "text", "plan_proposal", "automation_proposal", "notifications"
+    std::optional<PlanProposal> plan_proposal{std::nullopt};
+    std::optional<AutomationProposal> automation_proposal{std::nullopt};
+    std::vector<NotificationRecord> emitted_notifications{};
 };
 
 std::string to_string(IntentionStatus status);
