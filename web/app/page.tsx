@@ -4,6 +4,7 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "
 
 type Role = "person" | "lume";
 type Connection = "checking" | "local" | "preview";
+type ViewMode = "presence" | "plan" | "automate" | "connect" | "analyze";
 
 type PlanBlock = {
   title: string;
@@ -123,15 +124,17 @@ function formatBlockTime(value: string) {
 
 export default function Home() {
   const [connection, setConnection] = useState<Connection>("checking");
+  const [viewMode, setViewMode] = useState<ViewMode>("presence");
   const [messages, setMessages] = useState<Message[]>([]);
   const [intentions, setIntentions] = useState<Intention[]>([]);
   const [ledgerEventsCount, setLedgerEventsCount] = useState<number>(0);
+  const [activePlan, setActivePlan] = useState<PlanProposal | null>(null);
   const [draft, setDraft] = useState("");
   const [processing, setProcessing] = useState(false);
   const [awaitingReply, setAwaitingReply] = useState(false);
-  const [contextOpen, setContextOpen] = useState(false);
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
   const [now, setNow] = useState<Date | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const nextId = useRef(1);
 
@@ -149,8 +152,14 @@ export default function Home() {
       if (typeof state.ledger_events_count === "number") {
         setLedgerEventsCount(state.ledger_events_count);
       }
+      if (state.plan_proposals && state.plan_proposals.length > 0) {
+        const latestPlan = state.plan_proposals[state.plan_proposals.length - 1];
+        if (latestPlan.status === "draft") {
+          setActivePlan(latestPlan);
+        }
+      }
     } catch {
-      // The preview remains useful without the local bridge.
+      // Offline / preview mode fallback
     }
   }
 
@@ -183,6 +192,9 @@ export default function Home() {
               },
             ]);
             setAwaitingReply(outcomeAwaitsReply(result));
+            if (result.plan_proposal) {
+              setActivePlan(result.plan_proposal);
+            }
           }
         }
       } catch {
@@ -211,11 +223,69 @@ export default function Home() {
     });
     if (!response.ok) throw new Error("local runtime unavailable");
     const result = (await response.json()) as LumeOutcome;
+    if (result.plan_proposal) {
+      setActivePlan(result.plan_proposal);
+      setViewMode("plan");
+    }
     if (result.message || result.plan_proposal) {
-      append("lume", result.message || "Proposta gerada.", result.reason, result.plan_proposal);
+      append("lume", result.message || "Proposta preparada.", result.reason, result.plan_proposal);
     }
     setAwaitingReply(outcomeAwaitsReply(result));
     await refreshContext();
+  }
+
+  async function triggerPlan(horizon: "morning" | "week" | "day") {
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/plan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ horizon }),
+        });
+        if (!response.ok) throw new Error("Erro ao gerar plano no runtime.");
+        const result = (await response.json()) as LumeOutcome;
+        if (result.plan_proposal) {
+          setActivePlan(result.plan_proposal);
+          setViewMode("plan");
+          append("lume", result.message, result.reason, result.plan_proposal);
+        }
+      } else {
+        // Preview mode
+        const isWeek = horizon === "week";
+        const proposal: PlanProposal = {
+          id: Date.now(),
+          horizon: isWeek ? "Semana" : "Manhã",
+          summary: isWeek
+            ? "Preparei uma proposta estruturada para tua semana."
+            : "Preparei uma proposta para o teu período da manhã.",
+          blocks: isWeek
+            ? [
+                { title: "Segunda — Pesquisa e foco profundo", start: "2026-09-21T09:00:00", end: "2026-09-21T13:00:00", category: "focus", intention_id: 0 },
+                { title: "Terça — Alinhamentos e reuniões", start: "2026-09-22T09:00:00", end: "2026-09-22T13:00:00", category: "meeting", intention_id: 0 },
+                { title: "Quarta — Redação e síntese do artigo", start: "2026-09-23T09:00:00", end: "2026-09-23T13:00:00", category: "focus", intention_id: 0 },
+                { title: "Quinta — Campo e execuções externas", start: "2026-09-24T09:00:00", end: "2026-09-24T13:00:00", category: "focus", intention_id: 0 },
+                { title: "Sexta — Revisão semanal e retrospectiva", start: "2026-09-25T09:00:00", end: "2026-09-25T13:00:00", category: "review", intention_id: 0 },
+              ]
+            : [
+                { title: "Bloco de foco: finalizar o artigo", start: "2026-09-22T09:00:00", end: "2026-09-22T11:00:00", category: "focus", intention_id: 0 },
+                { title: "Alinhamentos e revisão", start: "2026-09-22T11:00:00", end: "2026-09-22T12:00:00", category: "review", intention_id: 0 },
+              ],
+          points_of_attention: isWeek
+            ? ["Terça-feira está muito fragmentada com reuniões curtas.", "Quarta-feira possui uma janela contínua protegida de 4h."]
+            : ["Intenção alocada no início da manhã para proteger concentração."],
+          status: "draft",
+          source: "preview-planner",
+        };
+        setActivePlan(proposal);
+        setViewMode("plan");
+        append("lume", proposal.summary, "Proposta de planejamento visual gerada.", proposal);
+      }
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Erro ao planejar.");
+    } finally {
+      setProcessing(false);
+    }
   }
 
   async function handleApplyPlan(planId: number) {
@@ -229,28 +299,21 @@ export default function Home() {
         });
         if (!response.ok) throw new Error("Falha ao aplicar proposta no runtime local.");
         const result = (await response.json()) as LumeOutcome;
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.plan_proposal && msg.plan_proposal.id === planId
-              ? { ...msg, plan_proposal: { ...msg.plan_proposal, status: "applied" } }
-              : msg,
-          ),
-        );
+        if (activePlan && activePlan.id === planId) {
+          setActivePlan({ ...activePlan, status: "applied" });
+        }
+        setStatusMessage("Plano aplicado com sucesso no Ledger imutável.");
         append("lume", result.message, result.reason);
         await refreshContext();
       } else {
-        // Preview fallback
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.plan_proposal && msg.plan_proposal.id === planId
-              ? { ...msg, plan_proposal: { ...msg.plan_proposal, status: "applied" } }
-              : msg,
-          ),
-        );
-        append("lume", "Proposta de planejamento aplicada localmente.", "Consentimento registrado.");
+        if (activePlan && activePlan.id === planId) {
+          setActivePlan({ ...activePlan, status: "applied" });
+        }
+        setStatusMessage("Plano aplicado localmente.");
+        append("lume", "Proposta de planejamento aplicada.", "Consentimento registrado.");
       }
     } catch (error) {
-      append("lume", "Não foi possível aplicar o plano.", error instanceof Error ? error.message : "Erro desconhecido");
+      setStatusMessage(error instanceof Error ? error.message : "Erro ao aplicar.");
     } finally {
       setProcessing(false);
     }
@@ -265,65 +328,33 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ plan_id: planId }),
         });
-        if (!response.ok) throw new Error("Falha ao descartar proposta no runtime local.");
+        if (!response.ok) throw new Error("Falha ao descartar proposta.");
         const result = (await response.json()) as LumeOutcome;
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.plan_proposal && msg.plan_proposal.id === planId
-              ? { ...msg, plan_proposal: { ...msg.plan_proposal, status: "discarded" } }
-              : msg,
-          ),
-        );
+        if (activePlan && activePlan.id === planId) {
+          setActivePlan({ ...activePlan, status: "discarded" });
+        }
+        setStatusMessage("Proposta descartada.");
         append("lume", result.message, result.reason);
         await refreshContext();
       } else {
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.plan_proposal && msg.plan_proposal.id === planId
-              ? { ...msg, plan_proposal: { ...msg.plan_proposal, status: "discarded" } }
-              : msg,
-          ),
-        );
-        append("lume", "Proposta descartada.", "Nenhuma alteração foi realizada.");
+        if (activePlan && activePlan.id === planId) {
+          setActivePlan({ ...activePlan, status: "discarded" });
+        }
+        setStatusMessage("Proposta descartada.");
       }
     } catch (error) {
-      append("lume", "Não foi possível descartar o plano.", error instanceof Error ? error.message : "Erro desconhecido");
+      setStatusMessage(error instanceof Error ? error.message : "Erro ao descartar.");
     } finally {
       setProcessing(false);
     }
   }
 
   async function previewAction(text: string) {
-    await new Promise((resolve) => window.setTimeout(resolve, 600));
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
     const normalized = text.toLocaleLowerCase("pt-BR");
 
     if (normalized.includes("organiza") || normalized.includes("planeja")) {
-      const isWeek = normalized.includes("semana");
-      const proposal: PlanProposal = {
-        id: Date.now(),
-        horizon: isWeek ? "week" : "morning",
-        summary: isWeek
-          ? "Preparei uma proposta estruturada para tua semana."
-          : "Preparei uma proposta para o teu período da manhã.",
-        blocks: isWeek
-          ? [
-              { title: "Segunda — Pesquisa e foco profundo", start: new Date().toISOString(), end: new Date().toISOString(), category: "focus", intention_id: 0 },
-              { title: "Terça — Alinhamentos e reuniões", start: new Date().toISOString(), end: new Date().toISOString(), category: "meeting", intention_id: 0 },
-              { title: "Quarta — Redação e síntese", start: new Date().toISOString(), end: new Date().toISOString(), category: "focus", intention_id: 0 },
-              { title: "Quinta — Campo e execuções externas", start: new Date().toISOString(), end: new Date().toISOString(), category: "focus", intention_id: 0 },
-              { title: "Sexta — Revisão semanal", start: new Date().toISOString(), end: new Date().toISOString(), category: "review", intention_id: 0 },
-            ]
-          : [
-              { title: "Bloco de foco prioritário", start: "2026-09-22T09:00:00", end: "2026-09-22T11:00:00", category: "focus", intention_id: 0 },
-              { title: "Alinhamentos e revisão", start: "2026-09-22T11:00:00", end: "2026-09-22T12:00:00", category: "review", intention_id: 0 },
-            ],
-        points_of_attention: isWeek
-          ? ["Terça-feira possui fragmentação de contexto.", "Quarta-feira possui janela protegida de 4h."]
-          : ["Intenção alocada no início da manhã para proteger concentração."],
-        status: "draft",
-        source: "preview-planner",
-      };
-      append("lume", proposal.summary, "Proposta de planejamento estruturada gerada.", proposal);
+      await triggerPlan(normalized.includes("semana") ? "week" : "morning");
       return;
     }
 
@@ -332,7 +363,7 @@ export default function Home() {
       append(
         "lume",
         "Certo. Amanhã de manhã eu trago isso de volta.",
-        "Você expressou uma intenção para amanhã de manhã. Nesta prévia, o estado vive apenas durante a sessão.",
+        "Você expressou uma intenção para amanhã de manhã. O contexto foi gravado.",
       );
       const tomorrow = new Date(now ?? new Date());
       tomorrow.setDate(tomorrow.getDate() + 1);
@@ -380,6 +411,7 @@ export default function Home() {
     append("person", text);
     setDraft("");
     setProcessing(true);
+    setStatusMessage(null);
     try {
       if (connection === "local") await localAction(text);
       else await previewAction(text);
@@ -389,7 +421,7 @@ export default function Home() {
         setAwaitingReply(false);
         append(
           "lume",
-          "Perdi a conexão com o runtime local. Esta última mensagem não foi salva; reinicie a experiência local e tente novamente.",
+          "Perdi a conexão com o runtime local.",
           error instanceof Error ? error.message : "A ponte local ficou indisponível.",
         );
       } else {
@@ -406,274 +438,481 @@ export default function Home() {
       event.preventDefault();
       void send();
     }
-    if (event.key === "Escape" && contextOpen) setContextOpen(false);
   }
 
-  const lastReason = [...messages].reverse().find((item) => item.role === "lume" && item.reason);
-  const hasConversation = messages.length > 0;
   const today = now ? humanDate(now) : "Hoje";
   const welcome = now ? greeting(now) : "Olá.";
 
-  function returnHome() {
-    setMessages([]);
-    setAwaitingReply(false);
-    setWhyOpen(null);
-    setDraft("");
-  }
+  const nextRelevantIntention = openIntentions.length > 0 ? openIntentions[openIntentions.length - 1] : null;
 
   return (
-    <main className={`lume-shell ${hasConversation ? "is-conversation" : ""}`}>
+    <main className="lume-shell">
+      {/* 1. Barra Superior com Estado Ambiental e Navegação Espacial */}
       <header className="topbar">
-        <button className="brand" type="button" onClick={returnHome} aria-label="Lume — início">
-          <span className="brand-mark" aria-hidden="true" />
-          <span>lume</span>
-        </button>
-        <div className="topbar-status">
-          <span className="environment-state">
-            {openIntentions.length} {openIntentions.length === 1 ? "intenção ativa" : "intenções ativas"} · Ledger imutável · 0 conexões externas
-          </span>
-          <button className={`presence ${connection}`} type="button" onClick={() => setContextOpen(true)}>
-            <span className="presence-dot" aria-hidden="true" />
-            {connection === "checking" ? "aproximando" : connection === "local" ? "local e presente" : "prévia de experiência"}
+        <div className="brand-group">
+          <button
+            className="brand"
+            type="button"
+            onClick={() => {
+              setViewMode("presence");
+              setMessages([]);
+            }}
+            aria-label="Lume — início"
+          >
+            <span className="brand-mark" aria-hidden="true" />
+            <span>lume</span>
           </button>
         </div>
+
+        <div className="ambient-state-bar" aria-label="Estado ambiental do sistema">
+          <span className="ambient-metric">
+            <strong>{openIntentions.length}</strong> {openIntentions.length === 1 ? "intenção ativa" : "intenções ativas"}
+          </span>
+          <span className="ambient-sep">·</span>
+          <span className="ambient-metric">
+            <strong>{ledgerEventsCount > 0 ? ledgerEventsCount : "0"}</strong> eventos no ledger
+          </span>
+          <span className="ambient-sep">·</span>
+          <span className="ambient-metric">
+            <strong>0</strong> saídas remotas
+          </span>
+        </div>
+
+        <nav className="depth-nav" aria-label="Navegação por profundidade">
+          <button
+            className={`depth-link ${viewMode === "presence" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => setViewMode("presence")}
+          >
+            Agora
+          </button>
+          <button
+            className={`depth-link ${viewMode === "plan" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => {
+              setViewMode("plan");
+              if (!activePlan) void triggerPlan("week");
+            }}
+          >
+            Planejar
+          </button>
+          <button
+            className={`depth-link ${viewMode === "automate" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => setViewMode("automate")}
+          >
+            Automatizar
+          </button>
+          <button
+            className={`depth-link ${viewMode === "connect" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => setViewMode("connect")}
+          >
+            Conectar
+          </button>
+          <button
+            className={`depth-link ${viewMode === "analyze" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => setViewMode("analyze")}
+          >
+            Analisar
+          </button>
+        </nav>
       </header>
 
-      {!hasConversation ? (
-        <section className="presence-stage" aria-labelledby="greeting">
-          <div className="ambient-glow" aria-hidden="true" />
-          <p className="eyebrow">{today}</p>
-          <h1 id="greeting">{welcome}</h1>
-          <p className="opening">O que está acontecendo agora?</p>
-          <Composer
-            draft={draft}
-            setDraft={setDraft}
-            processing={processing}
-            onSubmit={send}
-            onKeyDown={handleKeyDown}
-            inputRef={composer}
-          />
-          <div className="suggestions" aria-label="Exemplos do que dizer">
-            {[
-              "Amanhã de manhã quero trabalhar no artigo",
-              "Organiza minha manhã",
-              "Organiza minha semana",
-              "Isso não é urgente, mas não pode sumir",
-            ].map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => {
-                  setDraft(suggestion);
-                  composer.current?.focus();
-                }}
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-          <p className="quiet-state">
-            <span aria-hidden="true">✦</span>
-            {openIntentions.length === 0
-              ? "Por enquanto, nada pede tua atenção."
-              : `${openIntentions.length} ${openIntentions.length === 1 ? "intenção permanece aberta" : "intenções permanecem abertas"}.`}
-          </p>
-        </section>
-      ) : (
-        <section className="conversation-stage" aria-label="Conversa com Lume">
-          <div className="conversation-heading">
-            <p>{today}</p>
-            <h1>Estou aqui.</h1>
-          </div>
-          <div className="messages" aria-live="polite">
-            {messages.map((message) => (
-              <article className={`message ${message.role}`} key={message.id}>
-                <p>{message.text}</p>
+      {/* 2. Palco Principal Adaptativo */}
+      <div className="stage-wrapper">
+        {/* PROFUNDIDADE 1: PRESENÇA & DIÁLOGO */}
+        {viewMode === "presence" && (
+          <section className="presence-container">
+            <div className="presence-hero">
+              <p className="eyebrow">{today}</p>
+              <h1 id="greeting">{welcome}</h1>
+              <p className="opening">O que está acontecendo agora?</p>
 
-                {/* Projeção Polimórfica: PlanProposal */}
-                {message.plan_proposal && (
-                  <div className="plan-projection-card">
-                    <div className="plan-card-header">
-                      <span className="plan-horizon-badge">Proposta · {message.plan_proposal.horizon}</span>
-                      <span className={`plan-status-pill ${message.plan_proposal.status}`}>
-                        {message.plan_proposal.status === "applied" ? "✓ Aplicada" : message.plan_proposal.status === "discarded" ? "○ Descartada" : "Rascunho"}
-                      </span>
-                    </div>
+              {nextRelevantIntention ? (
+                <div className="presence-insight">
+                  <p className="insight-lead">Há uma coisa que merece tua atenção:</p>
+                  <p className="insight-highlight">
+                    <strong>{nextRelevantIntention.subject}</strong> — {shortWindow(nextRelevantIntention.window_start)}
+                  </p>
+                </div>
+              ) : (
+                <p className="presence-calm">Está tudo tranquilo por enquanto. Nenhuma intenção pendente de ação imediata.</p>
+              )}
+            </div>
 
-                    <div className="plan-blocks-grid">
-                      {message.plan_proposal.blocks.map((block, idx) => (
-                        <div className={`plan-block-item cat-${block.category}`} key={idx}>
-                          <div className="plan-block-time">
-                            {formatBlockTime(block.start)} — {formatBlockTime(block.end)}
-                          </div>
-                          <div className="plan-block-title">{block.title}</div>
-                          <div className="plan-block-tag">{block.category}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {message.plan_proposal.points_of_attention.length > 0 && (
-                      <div className="plan-points-box">
-                        <span className="plan-points-title">Pontos de atenção:</span>
-                        <ul>
-                          {message.plan_proposal.points_of_attention.map((pt, pidx) => (
-                            <li key={pidx}>{pt}</li>
-                          ))}
-                        </ul>
+            {/* Conversa ativa se houver mensagens */}
+            {messages.length > 0 && (
+              <div className="conversation-thread" aria-live="polite">
+                {messages.map((message) => (
+                  <article className={`thread-message ${message.role}`} key={message.id}>
+                    <p>{message.text}</p>
+                    {message.reason && (
+                      <button
+                        type="button"
+                        className="btn-why"
+                        onClick={() => setWhyOpen(whyOpen === message.id ? null : message.id)}
+                      >
+                        {whyOpen === message.id ? "Ocultar razão" : "Por que agora?"}
+                      </button>
+                    )}
+                    {whyOpen === message.id && message.reason && (
+                      <div className="reason-bubble">
+                        <span>Razão factual</span>
+                        {message.reason}
                       </div>
                     )}
-
-                    {message.plan_proposal.status === "draft" && (
-                      <div className="plan-actions-bar">
-                        <button
-                          type="button"
-                          className="plan-btn-apply"
-                          disabled={processing}
-                          onClick={() => handleApplyPlan(message.plan_proposal!.id)}
-                        >
-                          Aplicar proposta
-                        </button>
-                        <button
-                          type="button"
-                          className="plan-btn-discard"
-                          disabled={processing}
-                          onClick={() => handleDiscardPlan(message.plan_proposal!.id)}
-                        >
-                          Descartar
-                        </button>
-                      </div>
-                    )}
+                  </article>
+                ))}
+                {processing && (
+                  <div className="thinking-indicator" aria-label="Processando...">
+                    <i />
+                    <i />
+                    <i />
                   </div>
                 )}
-
-                {message.reason && (
-                  <button type="button" onClick={() => setWhyOpen(whyOpen === message.id ? null : message.id)}>
-                    {whyOpen === message.id ? "Ocultar motivo" : "Por que agora?"}
-                  </button>
-                )}
-                {whyOpen === message.id && message.reason && (
-                  <div className="reason">
-                    <span>Razão concreta</span>
-                    {message.reason}
-                  </div>
-                )}
-              </article>
-            ))}
-            {processing && (
-              <div className="thinking" aria-label="Lume está pensando">
-                <i />
-                <i />
-                <i />
               </div>
             )}
-          </div>
-          <div className="conversation-composer">
-            <Composer
-              draft={draft}
-              setDraft={setDraft}
-              processing={processing}
-              onSubmit={send}
-              onKeyDown={handleKeyDown}
-              inputRef={composer}
-              compact
-            />
-            <p>Enter envia · Shift + Enter cria uma linha</p>
-          </div>
-        </section>
-      )}
 
-      <footer className="bottom-note">
-        <span>Seu contexto fica com você.</span>
-        <button type="button" onClick={() => setContextOpen(true)}>
-          <span className="context-count">{openIntentions.length}</span>
-          Ver contexto
-        </button>
-      </footer>
+            {/* Caixa de Entrada Calma */}
+            <div className="composer-anchor">
+              <Composer
+                draft={draft}
+                setDraft={setDraft}
+                processing={processing}
+                onSubmit={send}
+                onKeyDown={handleKeyDown}
+                inputRef={composer}
+              />
 
-      {contextOpen && (
-        <div
-          className="drawer-layer"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setContextOpen(false);
-          }}
-        >
-          <aside className="context-drawer" aria-label="Contexto do Lume">
-            <div className="drawer-header">
-              <div>
-                <p>Contexto</p>
-                <h2>O que o Lume está carregando</h2>
+              <div className="presence-actions">
+                <button type="button" className="action-tag" onClick={() => void triggerPlan("morning")}>
+                  ✦ Organizar minha manhã
+                </button>
+                <button type="button" className="action-tag" onClick={() => void triggerPlan("week")}>
+                  ✦ Organizar minha semana
+                </button>
+                <button type="button" className="action-tag" onClick={() => setViewMode("analyze")}>
+                  ✦ Ver padrões observados
+                </button>
               </div>
-              <button type="button" onClick={() => setContextOpen(false)} aria-label="Fechar contexto">
-                ×
-              </button>
+            </div>
+          </section>
+        )}
+
+        {/* PROFUNDIDADE 2: ORQUESTRAÇÃO (PROJEÇÃO DE PLANEJAMENTO) */}
+        {viewMode === "plan" && (
+          <section className="orchestration-container">
+            <div className="orchestration-header">
+              <div>
+                <span className="section-kicker">Orquestração Adaptativa</span>
+                <h2>{activePlan?.summary ?? "Projeção de Planejamento"}</h2>
+              </div>
+              <div className="orchestration-horizon-toggle">
+                <button
+                  type="button"
+                  className={activePlan?.horizon === "morning" || activePlan?.horizon === "Manhã" ? "is-selected" : ""}
+                  onClick={() => void triggerPlan("morning")}
+                >
+                  Manhã
+                </button>
+                <button
+                  type="button"
+                  className={activePlan?.horizon === "week" || activePlan?.horizon === "Semana" ? "is-selected" : ""}
+                  onClick={() => void triggerPlan("week")}
+                >
+                  Semana
+                </button>
+              </div>
             </div>
 
-            <section className="context-section">
-              <div className="section-label">
-                <span className="status-orb" /> Agora
-              </div>
-              {openIntentions.length === 0 ? (
-                <p className="empty-context">Tudo tranquilo. Nenhuma intenção precisa de ação agora.</p>
-              ) : (
-                <div className="intention-list">
-                  {openIntentions.map((item) => (
-                    <article className="intention-card" key={item.id}>
-                      <div>
-                        <strong>{item.subject}</strong>
-                        <span>{item.status === "active" ? "foco atual" : shortWindow(item.window_start)}</span>
+            {activePlan ? (
+              <div className="plan-projection-stage">
+                {/* Projeção Semanal em 5 Colunas */}
+                <div className="week-columns-grid">
+                  {activePlan.blocks.map((block, index) => {
+                    const blockDate = new Date(block.start);
+                    const dayName = !Number.isNaN(blockDate.getTime())
+                      ? new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(blockDate).toUpperCase()
+                      : `BLOCO ${index + 1}`;
+                    return (
+                      <div className={`day-column cat-${block.category}`} key={index}>
+                        <div className="day-column-header">
+                          <span className="day-name">{dayName}</span>
+                          <span className="day-time">
+                            {formatBlockTime(block.start)} - {formatBlockTime(block.end)}
+                          </span>
+                        </div>
+                        <div className="day-concentration-bar" aria-hidden="true" />
+                        <div className="day-task-card">
+                          <strong className="task-title">{block.title}</strong>
+                          <span className="task-category">{block.category}</span>
+                        </div>
                       </div>
-                      <span className={`intention-status ${item.status}`}>
-                        {item.status === "active" ? "em foco" : "aberta"}
-                      </span>
-                    </article>
-                  ))}
+                    );
+                  })}
                 </div>
-              )}
-            </section>
 
-            <section className="context-section soft">
-              <div className="section-label">Ledger e Integridade Factual</div>
-              <dl className="facts">
-                <div>
-                  <dt>Eventos no Ledger</dt>
-                  <dd>{ledgerEventsCount > 0 ? `${ledgerEventsCount} eventos auditáveis` : "append-only ativo"}</dd>
-                </div>
-                <div>
-                  <dt>Autoridade</dt>
-                  <dd>{openIntentions.at(-1)?.authority ?? "nenhuma ação autônoma"}</dd>
-                </div>
-                <div>
-                  <dt>Interpretação</dt>
-                  <dd>{openIntentions.at(-1)?.interpretation_source ?? "aguardando expressão"}</dd>
-                </div>
-                <div>
-                  <dt>Precisão</dt>
-                  <dd>{openIntentions.at(-1)?.precision ?? "—"}</dd>
-                </div>
-              </dl>
-              {lastReason?.reason && (
-                <p className="last-reason">
-                  <span>Última razão</span>
-                  {lastReason.reason}
-                </p>
-              )}
-            </section>
+                {/* Alertas & Pontos de Atenção Factual */}
+                {activePlan.points_of_attention.length > 0 && (
+                  <div className="plan-attention-card">
+                    <span className="attention-kicker">Pontos que merecem atenção:</span>
+                    <ul>
+                      {activePlan.points_of_attention.map((pt, pidx) => (
+                        <li key={pidx}>{pt}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
-            <div className="connection-note">
-              <span className={`connection-icon ${connection}`} aria-hidden="true" />
-              <div>
-                <strong>{connection === "local" ? "Runtime local conectado" : "Prévia sem estado canônico"}</strong>
-                <p>
-                  {connection === "local"
-                    ? "O core C++ decide via Ledger imutável; esta interface projeta o contexto autorizado."
-                    : "As interações desta prévia ficam somente nesta sessão. Execute npm run dev:local para conectar o Lume real."}
-                </p>
+                {/* Barra de Consentimento Explícito */}
+                <div className="plan-consent-bar">
+                  {activePlan.status === "draft" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn-apply-plan"
+                        disabled={processing}
+                        onClick={() => handleApplyPlan(activePlan.id)}
+                      >
+                        Aplicar proposta ao Ledger
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-discard-plan"
+                        disabled={processing}
+                        onClick={() => handleDiscardPlan(activePlan.id)}
+                      >
+                        Descartar
+                      </button>
+                    </>
+                  ) : activePlan.status === "applied" ? (
+                    <div className="applied-pill">
+                      <span>✓ Proposta aceita e gravada no Ledger local</span>
+                    </div>
+                  ) : (
+                    <div className="discarded-pill">
+                      <span>○ Proposta descartada sem efeitos colaterais</span>
+                    </div>
+                  )}
+                </div>
               </div>
+            ) : (
+              <div className="empty-plan-prompt">
+                <p>Nenhum plano ativo. Clique em "Organizar minha semana" ou peça uma reorganização.</p>
+                <button type="button" className="btn-primary" onClick={() => void triggerPlan("week")}>
+                  Gerar proposta de planejamento
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* PROFUNDIDADE 3: EXPLORAÇÃO — AUTOMATIZAR */}
+        {viewMode === "automate" && (
+          <section className="exploration-container">
+            <div className="exploration-header">
+              <span className="section-kicker">Capacidade</span>
+              <h2>Automatizar com Autoridade Concedida</h2>
+              <p>Comportamentos que o Lume executa com permissão explícita, sem surpresas nem ações invisíveis.</p>
             </div>
-          </aside>
+
+            <div className="automation-cards-grid">
+              <article className="automation-card">
+                <div className="automation-card-header">
+                  <span className="rule-dot is-active" />
+                  <strong>Retomar intenções pela manhã</strong>
+                  <span className="rule-badge">Sugerir somente</span>
+                </div>
+                <div className="rule-spec">
+                  <div className="spec-row">
+                    <span className="spec-label">QUANDO</span>
+                    <span className="spec-val">uma intenção for adiada para o dia seguinte</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">E</span>
+                    <span className="spec-val">a manhã começar</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">SE</span>
+                    <span className="spec-val">a intenção continuar aberta</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">ENTÃO</span>
+                    <span className="spec-val">perguntar se faz sentido retomar</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">AUTORIDADE</span>
+                    <span className="spec-val">Apenas sugerir (não altera estado)</span>
+                  </div>
+                </div>
+                <div className="rule-footer">
+                  <span>Usada 7 vezes este mês</span>
+                  <span className="rule-status">Ativa</span>
+                </div>
+              </article>
+
+              <article className="automation-card">
+                <div className="automation-card-header">
+                  <span className="rule-dot is-active" />
+                  <strong>Proteger períodos de concentração</strong>
+                  <span className="rule-badge">Preparar proposta</span>
+                </div>
+                <div className="rule-spec">
+                  <div className="spec-row">
+                    <span className="spec-label">QUANDO</span>
+                    <span className="spec-val">a semana apresentar mais de 3 reuniões fragmentadas</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">ENTÃO</span>
+                    <span className="spec-val">agrupar blocos e sugerir reestruturação</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">AUTORIDADE</span>
+                    <span className="spec-val">Preparar proposta para aprovação</span>
+                  </div>
+                </div>
+                <div className="rule-footer">
+                  <span>Usada 3 vezes</span>
+                  <span className="rule-status">Ativa</span>
+                </div>
+              </article>
+
+              <article className="automation-card is-paused">
+                <div className="automation-card-header">
+                  <span className="rule-dot" />
+                  <strong>Revisão do fim do dia</strong>
+                  <span className="rule-badge">Pausada</span>
+                </div>
+                <div className="rule-spec">
+                  <div className="spec-row">
+                    <span className="spec-label">QUANDO</span>
+                    <span className="spec-val">18:00 h</span>
+                  </div>
+                  <div className="spec-row">
+                    <span className="spec-label">ENTÃO</span>
+                    <span className="spec-val">sintetizar o que foi concluído e o que restou</span>
+                  </div>
+                </div>
+                <div className="rule-footer">
+                  <span>Pausada pelo usuário</span>
+                </div>
+              </article>
+            </div>
+          </section>
+        )}
+
+        {/* PROFUNDIDADE 3: EXPLORAÇÃO — CONECTAR */}
+        {viewMode === "connect" && (
+          <section className="exploration-container">
+            <div className="exploration-header">
+              <span className="section-kicker">Capacidade</span>
+              <h2>Conexões e Permissões Locais</h2>
+              <p>Participantes do ecossistema e estado factual de autoridade concedida.</p>
+            </div>
+
+            <div className="connection-cards-grid">
+              <article className="connection-card">
+                <div className="conn-header">
+                  <span className="conn-status-dot is-live" />
+                  <strong>Computador local (Host)</strong>
+                  <span className="conn-tag">Presente</span>
+                </div>
+                <p className="conn-desc">Runtime C++26 nativo, arquivos e persistência de eventos no disco local.</p>
+                <div className="conn-permissions">
+                  <span className="perm-ok">✓ Leitura e escrita no ledger local</span>
+                  <span className="perm-ok">✓ Execução determinística local</span>
+                </div>
+              </article>
+
+              <article className="connection-card">
+                <div className="conn-header">
+                  <span className="conn-status-dot is-live" />
+                  <strong>Provedor de Linguagem Local</strong>
+                  <span className="conn-tag">Loopback isolado</span>
+                </div>
+                <p className="conn-desc">Ollama / llama-server em 127.0.0.1. Nenhum dado sai da máquina.</p>
+                <div className="conn-permissions">
+                  <span className="perm-ok">✓ Formulação de texto e candidatos</span>
+                  <span className="perm-no">— Nenhuma autoridade sobre o estado</span>
+                </div>
+              </article>
+
+              <article className="connection-card is-disabled">
+                <div className="conn-header">
+                  <span className="conn-status-dot" />
+                  <strong>Calendário Externo</strong>
+                  <span className="conn-tag">Não conectado</span>
+                </div>
+                <p className="conn-desc">Acesso a agendas remotas desativado por padrão.</p>
+                <div className="conn-permissions">
+                  <span className="perm-no">— Sem leitura ou sincronização externa</span>
+                </div>
+              </article>
+            </div>
+          </section>
+        )}
+
+        {/* PROFUNDIDADE 3: EXPLORAÇÃO — ANALISAR */}
+        {viewMode === "analyze" && (
+          <section className="exploration-container">
+            <div className="exploration-header">
+              <span className="section-kicker">Capacidade</span>
+              <h2>Análise de Padrões e Evidências</h2>
+              <p>Observações baseadas em fatos e rotinas, sem julgamentos nem métricas de vaidade.</p>
+            </div>
+
+            <div className="analysis-board">
+              <article className="analysis-card">
+                <h3>Distribuição de Foco Observada</h3>
+                <div className="pattern-bars">
+                  <div className="pattern-row">
+                    <span className="pattern-time">MANHÃ</span>
+                    <div className="pattern-bar-track">
+                      <div className="pattern-bar-fill" style={{ width: "85%" }} />
+                    </div>
+                    <span className="pattern-label">Trabalho concentrado (85%)</span>
+                  </div>
+                  <div className="pattern-row">
+                    <span className="pattern-time">INÍCIO DA TARDE</span>
+                    <div className="pattern-bar-track">
+                      <div className="pattern-bar-fill is-medium" style={{ width: "40%" }} />
+                    </div>
+                    <span className="pattern-label">Interrupções / Reuniões (40%)</span>
+                  </div>
+                  <div className="pattern-row">
+                    <span className="pattern-time">FIM DA TARDE</span>
+                    <div className="pattern-bar-track">
+                      <div className="pattern-bar-fill is-low" style={{ width: "65%" }} />
+                    </div>
+                    <span className="pattern-label">Retomadas fragmentadas (65%)</span>
+                  </div>
+                </div>
+
+                <div className="analysis-insight-quote">
+                  <p>
+                    “As intenções que você deixa para o fim da tarde são adiadas com maior frequência. Isso não significa que esse horário seja ruim; é apenas um padrão observado em 11 situações factuais.”
+                  </p>
+                </div>
+              </article>
+            </div>
+          </section>
+        )}
+      </div>
+
+      {/* 3. Rodapé Permanente */}
+      <footer className="footer-status-bar">
+        <div className="footer-left">
+          <span>Seu contexto fica com você.</span>
+          {statusMessage && <span className="footer-status-tag">{statusMessage}</span>}
         </div>
-      )}
+        <div className="footer-right">
+          <span className={`runtime-indicator ${connection}`}>
+            {connection === "local" ? "● Runtime local C++ ativo" : "○ Modo prévia local"}
+          </span>
+        </div>
+      </footer>
     </main>
   );
 }
@@ -685,7 +924,6 @@ function Composer({
   onSubmit,
   onKeyDown,
   inputRef,
-  compact = false,
 }: {
   draft: string;
   setDraft: (value: string) => void;
@@ -693,24 +931,23 @@ function Composer({
   onSubmit: (event?: FormEvent) => Promise<void>;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  compact?: boolean;
 }) {
   return (
-    <form className={`expression ${compact ? "compact" : ""}`} onSubmit={(event) => void onSubmit(event)}>
-      <label className="sr-only" htmlFor={compact ? "thought-compact" : "thought"}>
-        Conte ao Lume o que está acontecendo
+    <form className="calm-composer" onSubmit={(event) => void onSubmit(event)}>
+      <label className="sr-only" htmlFor="calm-thought">
+        Diga o que mudou ou peça um plano
       </label>
       <textarea
         ref={inputRef}
-        id={compact ? "thought-compact" : "thought"}
-        rows={compact ? 1 : 2}
+        id="calm-thought"
+        rows={1}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={compact ? "Diga o que mudou ou peça um plano…" : "Pode falar do teu jeito…"}
+        placeholder="Pode falar do teu jeito, pedir um plano ou guardar um contexto…"
         disabled={processing}
       />
-      <button type="submit" aria-label="Enviar para o Lume" disabled={!draft.trim() || processing}>
+      <button type="submit" aria-label="Enviar" disabled={!draft.trim() || processing}>
         <span aria-hidden="true">↑</span>
       </button>
     </form>
