@@ -200,84 +200,102 @@ Outcome Assistant::plan(std::string_view horizon_or_request, TimePoint now) {
 }
 
 Outcome Assistant::apply_plan(std::uint64_t plan_id, TimePoint now) {
-    auto state = ledger_.project_state();
-    auto it = std::find_if(state.plan_proposals.begin(), state.plan_proposals.end(),
-                           [&](const auto& p) { return p.id == plan_id; });
-    if (it == state.plan_proposals.end()) {
-        return {"NOT_FOUND", "Proposta de plano não encontrada.", "id inexistente", false, "text", std::nullopt, std::nullopt};
-    }
-
-    std::vector<EventRecord> batch;
-    batch.push_back(EventRecord{
-        .sequence_number = state.next_id++,
-        .recorded_at = now,
-        .authority = "user",
-        .payload = EventPlanApplied{
-            .plan_id = plan_id,
-            .applied_at = now,
-            .reason = "consentimento explícito do usuário",
-        },
-    });
-
-    // Apply plan blocks to intentions
-    for (const auto& block : it->blocks) {
-        if (block.intention_id != 0) {
-            batch.push_back(EventRecord{
-                .sequence_number = state.next_id++,
-                .recorded_at = now,
-                .authority = "user",
-                .payload = EventIntentionDeferred{
-                    .intention_id = block.intention_id,
-                    .new_start = block.start,
-                    .new_end = block.end,
-                    .precision = "plan_slot",
-                    .reason = "alocado no plano #" + std::to_string(plan_id),
-                    .at = now,
-                },
-            });
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.plan_proposals.begin(), state.plan_proposals.end(),
+                               [&](const auto& p) { return p.id == plan_id; });
+        if (it == state.plan_proposals.end()) {
+            return {"NOT_FOUND", "Proposta de plano não encontrada.", "id inexistente", false, "text", std::nullopt, std::nullopt};
         }
-    }
 
-    ledger_.append_batch(batch);
-    return {
-        .decision = "PLAN_APPLIED",
-        .message = "Proposta de planejamento aplicada. Os compromissos e intenções foram atualizados no ledger.",
-        .reason = "consentimento explícito do usuário para aplicar o plano #" + std::to_string(plan_id),
-        .changed = true,
-        .type = "text",
-        .plan_proposal = std::nullopt,
-        .automation_proposal = std::nullopt,
-    };
+        if (it->status == "applied") {
+            return {"ALREADY_APPLIED", "Esta proposta já foi aplicada anteriormente e é terminal.", "plano já aplicado", false, "text", std::nullopt, std::nullopt};
+        }
+        if (it->status == "discarded") {
+            return {"ALREADY_DISCARDED", "Esta proposta foi descartada anteriormente e não pode ser reativada.", "plano descartado", false, "text", std::nullopt, std::nullopt};
+        }
+
+        std::vector<EventRecord> batch;
+        batch.push_back(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .payload = EventPlanApplied{
+                .plan_id = plan_id,
+                .applied_at = now,
+                .reason = "consentimento explícito do usuário",
+            },
+        });
+
+        // Apply plan blocks to intentions
+        for (const auto& block : it->blocks) {
+            if (block.intention_id != 0) {
+                batch.push_back(EventRecord{
+                    .sequence_number = 0,
+                    .recorded_at = now,
+                    .authority = "user",
+                    .payload = EventIntentionDeferred{
+                        .intention_id = block.intention_id,
+                        .new_start = block.start,
+                        .new_end = block.end,
+                        .precision = "plan_slot",
+                        .reason = "alocado no plano #" + std::to_string(plan_id),
+                        .at = now,
+                    },
+                });
+            }
+        }
+
+        ledger_.append_batch(std::move(batch));
+        return {
+            .decision = "PLAN_APPLIED",
+            .message = "Proposta de planejamento aplicada. Os compromissos e intenções foram atualizados no ledger.",
+            .reason = "consentimento explícito do usuário para aplicar o plano #" + std::to_string(plan_id),
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+        };
+    });
 }
 
 Outcome Assistant::discard_plan(std::uint64_t plan_id, TimePoint now) {
-    auto state = ledger_.project_state();
-    auto it = std::find_if(state.plan_proposals.begin(), state.plan_proposals.end(),
-                           [&](const auto& p) { return p.id == plan_id; });
-    if (it == state.plan_proposals.end()) {
-        return {"NOT_FOUND", "Proposta de plano não encontrada.", "id inexistente", false, "text", std::nullopt, std::nullopt};
-    }
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        auto state = ledger_.project_state();
+        auto it = std::find_if(state.plan_proposals.begin(), state.plan_proposals.end(),
+                               [&](const auto& p) { return p.id == plan_id; });
+        if (it == state.plan_proposals.end()) {
+            return {"NOT_FOUND", "Proposta de plano não encontrada.", "id inexistente", false, "text", std::nullopt, std::nullopt};
+        }
 
-    ledger_.append(EventRecord{
-        .sequence_number = state.next_id++,
-        .recorded_at = now,
-        .authority = "user",
-        .payload = EventPlanDiscarded{
-            .plan_id = plan_id,
-            .discarded_at = now,
-            .reason = "descarte explícito pelo usuário",
-        },
+        if (it->status == "applied") {
+            return {"ALREADY_APPLIED", "Esta proposta já foi aplicada e não pode ser descartada.", "plano já aplicado", false, "text", std::nullopt, std::nullopt};
+        }
+        if (it->status == "discarded") {
+            return {"ALREADY_DISCARDED", "Esta proposta já foi descartada anteriormente.", "plano já descartado", false, "text", std::nullopt, std::nullopt};
+        }
+
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .payload = EventPlanDiscarded{
+                .plan_id = plan_id,
+                .discarded_at = now,
+                .reason = "descarte explícito pelo usuário",
+            },
+        });
+
+        return {
+            .decision = "PLAN_DISCARDED",
+            .message = "Proposta descartada. Nenhuma alteração foi realizada nas tuas intenções.",
+            .reason = "usuário optou por descartar o plano #" + std::to_string(plan_id),
+            .changed = true,
+            .type = "text",
+            .plan_proposal = std::nullopt,
+            .automation_proposal = std::nullopt,
+        };
     });
-
-    return {
-        .decision = "PLAN_DISCARDED",
-        .message = "Proposta descartada. Nenhuma alteração foi realizada nas tuas intenções.",
-        .reason = "usuário optou por descartar o plano #" + std::to_string(plan_id),
-        .changed = true,
-        .type = "text",
-        .plan_proposal = std::nullopt,
-        .automation_proposal = std::nullopt,
-    };
 }
 
 Outcome Assistant::observe(TimePoint now) {

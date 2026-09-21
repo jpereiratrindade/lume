@@ -174,6 +174,52 @@ void ledger_immutability_and_replay_test(const std::filesystem::path& path) {
            "replay must preserve intention subject");
 }
 
+void legacy_migration_test(const std::filesystem::path& path) {
+    // Write legacy LUME\t1 format snapshot
+    {
+        std::ofstream out(path);
+        out << "LUME\t1\n";
+        out << "N\t3\n";
+        out << "E\t1\t1790000000\t616263\n"; // "abc" hex
+        out << "I\t2\t1\t61727469676f\t1790050000\t1790080000\t646174652b706572696f64\topen\t75736572\t66616c6c6261636b\t-\n";
+    }
+
+    lume::Ledger ledger{path};
+    const auto records = ledger.read_all();
+    expect(records.size() == 2, "migration must create event records from legacy snapshot");
+    expect(std::filesystem::exists(path.string() + ".bak"), "migration must create .bak backup");
+
+    const auto state = ledger.project_state();
+    expect(state.expressions.size() == 1, "migrated expression must be available in state");
+    expect(state.intentions.size() == 1, "migrated intention must be available in state");
+    expect(state.intentions.front().subject == "artigo", "migrated subject must match");
+}
+
+void monotonic_sequence_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    ledger.append(lume::EventRecord{
+        .recorded_at = at("2026-09-21T18:00:00"),
+        .authority = "user",
+        .payload = lume::EventExpressionRecorded{1, at("2026-09-21T18:00:00"), "teste 1"},
+    });
+    ledger.append(lume::EventRecord{
+        .recorded_at = at("2026-09-21T18:01:00"),
+        .authority = "user",
+        .payload = lume::EventExpressionRecorded{2, at("2026-09-21T18:01:00"), "teste 2"},
+    });
+    ledger.append(lume::EventRecord{
+        .recorded_at = at("2026-09-21T18:02:00"),
+        .authority = "user",
+        .payload = lume::EventExpressionRecorded{3, at("2026-09-21T18:02:00"), "teste 3"},
+    });
+
+    const auto records = ledger.read_all();
+    expect(records.size() == 3, "must have 3 records");
+    expect(records[0].sequence_number == 1, "seq 1");
+    expect(records[1].sequence_number == 2, "seq 2");
+    expect(records[2].sequence_number == 3, "seq 3");
+}
+
 void orchestration_plan_lifecycle_test(const std::filesystem::path& path) {
     lume::Ledger ledger{path};
     lume::Assistant assistant{ledger, lume::make_deterministic_language()};
@@ -203,6 +249,10 @@ void orchestration_plan_lifecycle_test(const std::filesystem::path& path) {
     expect(state_after.plan_proposals.front().status == "applied", "plan status must update to applied");
     expect(state_after.intentions.front().precision == "plan_slot",
            "intention must be bound to plan slot");
+
+    // Test terminal state: cannot apply again
+    const auto reapply = assistant.apply_plan(plan_id, at("2026-09-21T18:07:00"));
+    expect(reapply.decision == "ALREADY_APPLIED", "cannot reapply applied terminal plan");
 }
 
 }  // namespace
@@ -221,6 +271,8 @@ int main() {
         ambiguous_reply_test(base / "ambiguous-reply.state");
         unspecified_deferral_test(base / "unspecified-deferral.state");
         ledger_immutability_and_replay_test(base / "ledger-replay.state");
+        legacy_migration_test(base / "legacy.state");
+        monotonic_sequence_test(base / "sequence.state");
         orchestration_plan_lifecycle_test(base / "orchestration.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";

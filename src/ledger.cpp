@@ -2,14 +2,28 @@
 
 #include <algorithm>
 #include <charconv>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <unordered_map>
 
 namespace lume {
 namespace {
+
+struct LockInfo {
+    int fd{-1};
+    int count{0};
+};
+
+std::mutex g_lock_mutex;
+std::unordered_map<std::string, LockInfo> g_locks;
 
 std::string hex_encode(std::string_view input) {
     constexpr char digits[] = "0123456789abcdef";
@@ -132,76 +146,263 @@ std::vector<std::string> decode_strings(const std::string& encoded) {
 
 }  // namespace
 
+FileLockGuard::FileLockGuard(std::string lock_path) : lock_path_(std::move(lock_path)) {
+    if (lock_path_.empty()) return;
+
+    std::unique_lock<std::mutex> guard(g_lock_mutex);
+    auto& info = g_locks[lock_path_];
+    if (info.count == 0) {
+        int fd = open(lock_path_.c_str(), O_RDWR | O_CREAT, 0666);
+        if (fd < 0) {
+            g_locks.erase(lock_path_);
+            throw std::runtime_error("could not open lock file: " + lock_path_);
+        }
+        if (flock(fd, LOCK_EX) != 0) {
+            close(fd);
+            g_locks.erase(lock_path_);
+            throw std::runtime_error("could not acquire exclusive flock: " + lock_path_);
+        }
+        info.fd = fd;
+    }
+    info.count++;
+}
+
+FileLockGuard::~FileLockGuard() {
+    if (lock_path_.empty()) return;
+
+    std::unique_lock<std::mutex> guard(g_lock_mutex);
+    auto it = g_locks.find(lock_path_);
+    if (it != g_locks.end()) {
+        it->second.count--;
+        if (it->second.count <= 0) {
+            if (it->second.fd >= 0) {
+                flock(it->second.fd, LOCK_UN);
+                close(it->second.fd);
+            }
+            g_locks.erase(it);
+        }
+    }
+}
+
+FileLockGuard::FileLockGuard(FileLockGuard&& other) noexcept : lock_path_(std::move(other.lock_path_)) {
+    other.lock_path_.clear();
+}
+
+FileLockGuard& FileLockGuard::operator=(FileLockGuard&& other) noexcept {
+    if (this != &other) {
+        this->~FileLockGuard();
+        lock_path_ = std::move(other.lock_path_);
+        other.lock_path_.clear();
+    }
+    return *this;
+}
+
 Ledger::Ledger(std::filesystem::path path) : path_(std::move(path)) {}
 
 const std::filesystem::path& Ledger::path() const noexcept { return path_; }
+
+FileLockGuard Ledger::acquire_file_lock() const {
+    if (path_.has_parent_path()) std::filesystem::create_directories(path_.parent_path());
+    const auto lock_file_path = std::filesystem::absolute(path_).string() + ".lock";
+    return FileLockGuard(lock_file_path);
+}
+
+bool Ledger::migrate_if_needed() const {
+    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) return false;
+
+    std::ifstream check_input(path_);
+    if (!check_input) return false;
+    std::string header;
+    if (!std::getline(check_input, header) || header != "LUME\t1") return false;
+
+    // Read legacy state
+    std::vector<EventRecord> migrated_records;
+    std::uint64_t seq = 1;
+    std::string line;
+    while (std::getline(check_input, line)) {
+        if (line.empty()) continue;
+        const auto f = split_tabs(line);
+        if (f.empty()) continue;
+        if (f[0] == "E" && f.size() == 4) {
+            migrated_records.push_back(EventRecord{
+                .sequence_number = seq++,
+                .recorded_at = time_from_epoch(f[2]),
+                .authority = "user",
+                .payload = EventExpressionRecorded{
+                    .id = number<std::uint64_t>(f[1]),
+                    .timestamp = time_from_epoch(f[2]),
+                    .text = hex_decode(f[3]),
+                },
+            });
+        } else if (f[0] == "I" && f.size() == 11) {
+            const auto status = intention_status_from_string(f[7]);
+            migrated_records.push_back(EventRecord{
+                .sequence_number = seq++,
+                .recorded_at = time_from_epoch(f[4]),
+                .authority = hex_decode(f[8]),
+                .payload = EventIntentionDerived{
+                    .id = number<std::uint64_t>(f[1]),
+                    .expression_id = number<std::uint64_t>(f[2]),
+                    .subject = hex_decode(f[3]),
+                    .window_start = time_from_epoch(f[4]),
+                    .window_end = time_from_epoch(f[5]),
+                    .precision = hex_decode(f[6]),
+                    .authority = hex_decode(f[8]),
+                    .interpretation_source = hex_decode(f[9]),
+                },
+            });
+            if (status && *status != IntentionStatus::open) {
+                migrated_records.push_back(EventRecord{
+                    .sequence_number = seq++,
+                    .recorded_at = time_from_epoch(f[4]),
+                    .authority = "user",
+                    .payload = EventIntentionStatusChanged{
+                        .intention_id = number<std::uint64_t>(f[1]),
+                        .new_status = *status,
+                        .reason = "migrated from legacy state",
+                        .at = time_from_epoch(f[4]),
+                    },
+                });
+            }
+        } else if (f[0] == "X" && f.size() == 9) {
+            migrated_records.push_back(EventRecord{
+                .sequence_number = seq++,
+                .recorded_at = time_from_epoch(f[3]),
+                .authority = "core",
+                .payload = EventInteractionRecorded{
+                    .id = number<std::uint64_t>(f[1]),
+                    .intention_id = number<std::uint64_t>(f[2]),
+                    .timestamp = time_from_epoch(f[3]),
+                    .message = hex_decode(f[4]),
+                    .reason = hex_decode(f[5]),
+                    .decision = hex_decode(f[6]),
+                    .formulation_source = hex_decode(f[7]),
+                },
+            });
+        }
+    }
+    check_input.close();
+
+    // Create .bak backup
+    const auto backup_path = path_.string() + ".bak";
+    std::filesystem::copy_file(path_, backup_path, std::filesystem::copy_options::overwrite_existing);
+
+    // Atomic write to temporary file then rename
+    const auto tmp_path = path_.string() + ".tmp";
+    {
+        std::ofstream output(tmp_path, std::ios::trunc);
+        if (!output) throw std::runtime_error("could not open temporary file for migration: " + tmp_path);
+        output << "LUME-LEDGER\t1\n";
+        for (const auto& record : migrated_records) {
+            output << record.sequence_number << '\t'
+                   << epoch(record.recorded_at) << '\t'
+                   << hex_encode(record.authority) << '\t';
+            std::visit([&](const auto& event) {
+                using T = std::decay_t<decltype(event)>;
+                if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
+                    output << "EXPR\t" << event.id << '\t' << hex_encode(event.text);
+                } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
+                    output << "INT_DERIVED\t" << event.id << '\t' << event.expression_id << '\t'
+                           << hex_encode(event.subject) << '\t' << epoch(event.window_start) << '\t'
+                           << epoch(event.window_end) << '\t' << hex_encode(event.precision) << '\t'
+                           << hex_encode(event.authority) << '\t' << hex_encode(event.interpretation_source);
+                } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
+                    output << "INT_STATUS\t" << event.intention_id << '\t'
+                           << to_string(event.new_status) << '\t' << hex_encode(event.reason);
+                } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
+                    output << "INTERACTION\t" << event.id << '\t' << event.intention_id << '\t'
+                           << hex_encode(event.message) << '\t' << hex_encode(event.reason) << '\t'
+                           << hex_encode(event.decision) << '\t' << hex_encode(event.formulation_source);
+                }
+            }, record.payload);
+            output << '\n';
+        }
+        output.flush();
+    }
+    std::filesystem::rename(tmp_path, path_);
+    return true;
+}
 
 void Ledger::append(const EventRecord& record) {
     append_batch({record});
 }
 
-void Ledger::append_batch(const std::vector<EventRecord>& records) {
+void Ledger::append_batch(std::vector<EventRecord> records) {
     if (records.empty()) return;
-    if (path_.has_parent_path()) std::filesystem::create_directories(path_.parent_path());
 
-    bool is_new_file = !std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0;
+    with_exclusive_lock([&] {
+        const auto existing = read_all();
+        std::uint64_t max_seq = 0;
+        for (const auto& rec : existing) {
+            max_seq = std::max(max_seq, rec.sequence_number);
+        }
 
-    std::ofstream output(path_, std::ios::app);
-    if (!output) throw std::runtime_error("could not open ledger for writing: " + path_.string());
+        bool is_new_file = !std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0;
 
-    if (is_new_file) {
-        output << "LUME-LEDGER\t1\n";
-    }
+        std::ofstream output(path_, std::ios::app);
+        if (!output) throw std::runtime_error("could not open ledger for writing: " + path_.string());
 
-    for (const auto& record : records) {
-        output << record.sequence_number << '\t'
-               << epoch(record.recorded_at) << '\t'
-               << hex_encode(record.authority) << '\t';
+        if (is_new_file) {
+            output << "LUME-LEDGER\t1\n";
+        }
 
-        std::visit([&](const auto& event) {
-            using T = std::decay_t<decltype(event)>;
-            if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
-                output << "EXPR\t" << event.id << '\t' << hex_encode(event.text);
-            } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
-                output << "INT_DERIVED\t" << event.id << '\t' << event.expression_id << '\t'
-                       << hex_encode(event.subject) << '\t' << epoch(event.window_start) << '\t'
-                       << epoch(event.window_end) << '\t' << hex_encode(event.precision) << '\t'
-                       << hex_encode(event.authority) << '\t' << hex_encode(event.interpretation_source);
-            } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
-                output << "INT_STATUS\t" << event.intention_id << '\t'
-                       << to_string(event.new_status) << '\t' << hex_encode(event.reason);
-            } else if constexpr (std::is_same_v<T, EventIntentionDeferred>) {
-                output << "INT_DEFERRED\t" << event.intention_id << '\t'
-                       << epoch(event.new_start) << '\t' << epoch(event.new_end) << '\t'
-                       << hex_encode(event.precision) << '\t' << hex_encode(event.reason);
-            } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
-                output << "INTERACTION\t" << event.id << '\t' << event.intention_id << '\t'
-                       << hex_encode(event.message) << '\t' << hex_encode(event.reason) << '\t'
-                       << hex_encode(event.decision) << '\t' << hex_encode(event.formulation_source);
-            } else if constexpr (std::is_same_v<T, EventPlanProposed>) {
-                output << "PLAN_PROP\t" << event.id << '\t'
-                       << hex_encode(event.horizon) << '\t' << hex_encode(event.summary) << '\t'
-                       << hex_encode(encode_blocks(event.blocks)) << '\t'
-                       << hex_encode(encode_strings(event.points_of_attention)) << '\t'
-                       << event.status << '\t' << hex_encode(event.source);
-            } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
-                output << "PLAN_APPL\t" << event.plan_id << '\t' << hex_encode(event.reason);
-            } else if constexpr (std::is_same_v<T, EventPlanDiscarded>) {
-                output << "PLAN_DISC\t" << event.plan_id << '\t' << hex_encode(event.reason);
-            } else if constexpr (std::is_same_v<T, EventAutomationProposed>) {
-                output << "AUTO_PROP\t" << event.id << '\t'
-                       << hex_encode(event.trigger_when) << '\t' << hex_encode(event.condition_if) << '\t'
-                       << hex_encode(event.action_then) << '\t' << hex_encode(event.authority) << '\t'
-                       << event.status;
-            } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
-                output << "AUTO_TRIG\t" << event.automation_id << '\t' << hex_encode(event.explanation);
+        for (auto& record : records) {
+            if (record.sequence_number == 0) {
+                record.sequence_number = ++max_seq;
+            } else {
+                max_seq = std::max(max_seq, record.sequence_number);
             }
-        }, record.payload);
 
-        output << '\n';
-    }
-    output.flush();
-    if (!output) throw std::runtime_error("failed to write records to ledger");
+            output << record.sequence_number << '\t'
+                   << epoch(record.recorded_at) << '\t'
+                   << hex_encode(record.authority) << '\t';
+
+            std::visit([&](const auto& event) {
+                using T = std::decay_t<decltype(event)>;
+                if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
+                    output << "EXPR\t" << event.id << '\t' << hex_encode(event.text);
+                } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
+                    output << "INT_DERIVED\t" << event.id << '\t' << event.expression_id << '\t'
+                           << hex_encode(event.subject) << '\t' << epoch(event.window_start) << '\t'
+                           << epoch(event.window_end) << '\t' << hex_encode(event.precision) << '\t'
+                           << hex_encode(event.authority) << '\t' << hex_encode(event.interpretation_source);
+                } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
+                    output << "INT_STATUS\t" << event.intention_id << '\t'
+                           << to_string(event.new_status) << '\t' << hex_encode(event.reason);
+                } else if constexpr (std::is_same_v<T, EventIntentionDeferred>) {
+                    output << "INT_DEFERRED\t" << event.intention_id << '\t'
+                           << epoch(event.new_start) << '\t' << epoch(event.new_end) << '\t'
+                           << hex_encode(event.precision) << '\t' << hex_encode(event.reason);
+                } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
+                    output << "INTERACTION\t" << event.id << '\t' << event.intention_id << '\t'
+                           << hex_encode(event.message) << '\t' << hex_encode(event.reason) << '\t'
+                           << hex_encode(event.decision) << '\t' << hex_encode(event.formulation_source);
+                } else if constexpr (std::is_same_v<T, EventPlanProposed>) {
+                    output << "PLAN_PROP\t" << event.id << '\t'
+                           << hex_encode(event.horizon) << '\t' << hex_encode(event.summary) << '\t'
+                           << hex_encode(encode_blocks(event.blocks)) << '\t'
+                           << hex_encode(encode_strings(event.points_of_attention)) << '\t'
+                           << event.status << '\t' << hex_encode(event.source);
+                } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
+                    output << "PLAN_APPL\t" << event.plan_id << '\t' << hex_encode(event.reason);
+                } else if constexpr (std::is_same_v<T, EventPlanDiscarded>) {
+                    output << "PLAN_DISC\t" << event.plan_id << '\t' << hex_encode(event.reason);
+                } else if constexpr (std::is_same_v<T, EventAutomationProposed>) {
+                    output << "AUTO_PROP\t" << event.id << '\t'
+                           << hex_encode(event.trigger_when) << '\t' << hex_encode(event.condition_if) << '\t'
+                           << hex_encode(event.action_then) << '\t' << hex_encode(event.authority) << '\t'
+                           << event.status;
+                } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
+                    output << "AUTO_TRIG\t" << event.automation_id << '\t' << hex_encode(event.explanation);
+                }
+            }, record.payload);
+
+            output << '\n';
+        }
+        output.flush();
+        if (!output) throw std::runtime_error("failed to write records to ledger");
+        return true;
+    });
 }
 
 std::vector<EventRecord> Ledger::read_all() const {
@@ -214,9 +415,10 @@ std::vector<EventRecord> Ledger::read_all() const {
     std::string header;
     if (!std::getline(input, header)) return records;
 
-    // Handle legacy snapshot state file transparently
     if (header == "LUME\t1") {
-        return records;
+        input.close();
+        migrate_if_needed();
+        return read_all();
     }
 
     if (header != "LUME-LEDGER\t1") {
@@ -330,51 +532,6 @@ std::vector<EventRecord> Ledger::read_all() const {
 
 State Ledger::project_state() const {
     State state;
-    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) return state;
-
-    // Check if it's an old legacy snapshot file
-    std::ifstream check_input(path_);
-    std::string header;
-    if (std::getline(check_input, header) && header == "LUME\t1") {
-        // Fallback loader for legacy snapshots
-        check_input.clear();
-        check_input.seekg(0);
-        std::string line;
-        std::getline(check_input, line); // Skip LUME\t1
-        while (std::getline(check_input, line)) {
-            if (line.empty()) continue;
-            const auto fields = split_tabs(line);
-            if (fields[0] == "N" && fields.size() == 2) {
-                state.next_id = number<std::uint64_t>(fields[1]);
-            } else if (fields[0] == "E" && fields.size() == 4) {
-                state.expressions.push_back(Expression{
-                    number<std::uint64_t>(fields[1]), time_from_epoch(fields[2]), hex_decode(fields[3])});
-            } else if (fields[0] == "I" && fields.size() == 11) {
-                const auto status = intention_status_from_string(fields[7]);
-                Intention intention{
-                    .id = number<std::uint64_t>(fields[1]),
-                    .expression_id = number<std::uint64_t>(fields[2]),
-                    .subject = hex_decode(fields[3]),
-                    .window_start = time_from_epoch(fields[4]),
-                    .window_end = time_from_epoch(fields[5]),
-                    .precision = hex_decode(fields[6]),
-                    .authority = hex_decode(fields[8]),
-                    .interpretation_source = hex_decode(fields[9]),
-                    .status = status.value_or(IntentionStatus::open),
-                    .last_interaction_at = std::nullopt,
-                };
-                if (fields[10] != "-") intention.last_interaction_at = time_from_epoch(fields[10]);
-                state.intentions.push_back(std::move(intention));
-            } else if (fields[0] == "X" && fields.size() == 9) {
-                state.interactions.push_back(Interaction{
-                    number<std::uint64_t>(fields[1]), number<std::uint64_t>(fields[2]),
-                    time_from_epoch(fields[3]), hex_decode(fields[4]), hex_decode(fields[5]),
-                    hex_decode(fields[6]), hex_decode(fields[7])});
-            }
-        }
-        return state;
-    }
-
     const auto records = read_all();
     std::uint64_t max_id = 0;
 

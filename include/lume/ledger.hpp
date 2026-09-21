@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
@@ -110,25 +111,54 @@ using EventPayload = std::variant<
 >;
 
 struct EventRecord {
-    std::uint64_t sequence_number{};
+    std::uint64_t sequence_number{0}; // Assigned automatically by Ledger if 0
     TimePoint recorded_at{};
     std::string authority{"user"}; // "user", "core", "inferred"
     EventPayload payload;
+};
+
+class FileLockGuard {
+public:
+    explicit FileLockGuard(std::string lock_path = "");
+    ~FileLockGuard();
+    FileLockGuard(FileLockGuard&& other) noexcept;
+    FileLockGuard& operator=(FileLockGuard&& other) noexcept;
+    FileLockGuard(const FileLockGuard&) = delete;
+    FileLockGuard& operator=(const FileLockGuard&) = delete;
+
+private:
+    std::string lock_path_;
 };
 
 class Ledger {
 public:
     explicit Ledger(std::filesystem::path path);
 
+    // Atomically appends records assigning monotonic sequence numbers
     void append(const EventRecord& record);
-    void append_batch(const std::vector<EventRecord>& records);
+    void append_batch(std::vector<EventRecord> records);
 
+    // Reads all events reconstructing the state
     [[nodiscard]] std::vector<EventRecord> read_all() const;
     [[nodiscard]] State project_state() const;
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
 
+    // Migrates legacy LUME\t1 snapshot file to LUME-LEDGER\t1 with .bak backup
+    bool migrate_if_needed() const;
+
+    // Executes a callback under an exclusive flock covering read->project->mutate->append
+    template <typename Func>
+    auto with_exclusive_lock(Func&& func) const -> decltype(func()) {
+        FileLockGuard lock = acquire_file_lock();
+        migrate_if_needed();
+        return func();
+    }
+
 private:
+    [[nodiscard]] FileLockGuard acquire_file_lock() const;
+
     std::filesystem::path path_;
 };
 
 }  // namespace lume
+

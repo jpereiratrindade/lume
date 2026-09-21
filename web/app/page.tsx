@@ -464,60 +464,53 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="ambient-state-bar" aria-label="Estado ambiental do sistema">
-          <span className="ambient-metric">
-            <strong>{openIntentions.length}</strong> {openIntentions.length === 1 ? "intenção ativa" : "intenções ativas"}
-          </span>
-          <span className="ambient-sep">·</span>
-          <span className="ambient-metric">
-            <strong>{ledgerEventsCount > 0 ? ledgerEventsCount : "0"}</strong> eventos no ledger
-          </span>
-          <span className="ambient-sep">·</span>
-          <span className="ambient-metric">
-            <strong>0</strong> saídas remotas
-          </span>
-        </div>
+        <div className="topbar-actions">
+          <div className={`presence-pill ${connection}`}>
+            <span className="presence-dot" aria-hidden="true" />
+            <span>{connection === "local" ? "LOCAL E PRESENTE" : "PRÉVIA LOCAL"}</span>
+          </div>
 
-        <nav className="depth-nav" aria-label="Navegação por profundidade">
-          <button
-            className={`depth-link ${viewMode === "presence" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setViewMode("presence")}
-          >
-            Agora
-          </button>
-          <button
-            className={`depth-link ${viewMode === "plan" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => {
-              setViewMode("plan");
-              if (!activePlan) void triggerPlan("week");
-            }}
-          >
-            Planejar
-          </button>
-          <button
-            className={`depth-link ${viewMode === "automate" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setViewMode("automate")}
-          >
-            Automatizar
-          </button>
-          <button
-            className={`depth-link ${viewMode === "connect" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setViewMode("connect")}
-          >
-            Conectar
-          </button>
-          <button
-            className={`depth-link ${viewMode === "analyze" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setViewMode("analyze")}
-          >
-            Analisar
-          </button>
-        </nav>
+          <nav className="depth-nav" aria-label="Navegação por profundidade">
+            <button
+              className={`depth-link ${viewMode === "presence" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setViewMode("presence")}
+            >
+              Agora
+            </button>
+            <button
+              className={`depth-link ${viewMode === "plan" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => {
+                setViewMode("plan");
+                if (!activePlan) void triggerPlan("week");
+              }}
+            >
+              Planejar
+            </button>
+            <button
+              className={`depth-link ${viewMode === "automate" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setViewMode("automate")}
+            >
+              Automatizar
+            </button>
+            <button
+              className={`depth-link ${viewMode === "connect" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setViewMode("connect")}
+            >
+              Conectar
+            </button>
+            <button
+              className={`depth-link ${viewMode === "analyze" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setViewMode("analyze")}
+            >
+              Analisar
+            </button>
+          </nav>
+        </div>
       </header>
 
       {/* 2. Palco Principal Adaptativo */}
@@ -718,87 +711,12 @@ export default function Home() {
               <p>Comportamentos que o Lume executa com permissão explícita, sem surpresas nem ações invisíveis.</p>
             </div>
 
-            <div className="automation-cards-grid">
-              <article className="automation-card">
-                <div className="automation-card-header">
-                  <span className="rule-dot is-active" />
-                  <strong>Retomar intenções pela manhã</strong>
-                  <span className="rule-badge">Sugerir somente</span>
-                </div>
-                <div className="rule-spec">
-                  <div className="spec-row">
-                    <span className="spec-label">QUANDO</span>
-                    <span className="spec-val">uma intenção for adiada para o dia seguinte</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">E</span>
-                    <span className="spec-val">a manhã começar</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">SE</span>
-                    <span className="spec-val">a intenção continuar aberta</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">ENTÃO</span>
-                    <span className="spec-val">perguntar se faz sentido retomar</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">AUTORIDADE</span>
-                    <span className="spec-val">Apenas sugerir (não altera estado)</span>
-                  </div>
-                </div>
-                <div className="rule-footer">
-                  <span>Usada 7 vezes este mês</span>
-                  <span className="rule-status">Ativa</span>
-                </div>
-              </article>
-
-              <article className="automation-card">
-                <div className="automation-card-header">
-                  <span className="rule-dot is-active" />
-                  <strong>Proteger períodos de concentração</strong>
-                  <span className="rule-badge">Preparar proposta</span>
-                </div>
-                <div className="rule-spec">
-                  <div className="spec-row">
-                    <span className="spec-label">QUANDO</span>
-                    <span className="spec-val">a semana apresentar mais de 3 reuniões fragmentadas</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">ENTÃO</span>
-                    <span className="spec-val">agrupar blocos e sugerir reestruturação</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">AUTORIDADE</span>
-                    <span className="spec-val">Preparar proposta para aprovação</span>
-                  </div>
-                </div>
-                <div className="rule-footer">
-                  <span>Usada 3 vezes</span>
-                  <span className="rule-status">Ativa</span>
-                </div>
-              </article>
-
-              <article className="automation-card is-paused">
-                <div className="automation-card-header">
-                  <span className="rule-dot" />
-                  <strong>Revisão do fim do dia</strong>
-                  <span className="rule-badge">Pausada</span>
-                </div>
-                <div className="rule-spec">
-                  <div className="spec-row">
-                    <span className="spec-label">QUANDO</span>
-                    <span className="spec-val">18:00 h</span>
-                  </div>
-                  <div className="spec-row">
-                    <span className="spec-label">ENTÃO</span>
-                    <span className="spec-val">sintetizar o que foi concluído e o que restou</span>
-                  </div>
-                </div>
-                <div className="rule-footer">
-                  <span>Pausada pelo usuário</span>
-                </div>
-              </article>
+            <div className="factual-empty-card">
+              <span className="factual-badge">Estado Factual</span>
+              <h3>Nenhuma automação foi ativada ainda.</h3>
+              <p>
+                O Lume não executa comportamentos autônomos sem permissão explícita registrada no Ledger. Quando você conceder autoridade para um comportamento recorrente (como proteção de concentração ou retomada matinal), ele aparecerá aqui com sua especificação e histórico factual de execuções.
+              </p>
             </div>
           </section>
         )}
@@ -821,21 +739,25 @@ export default function Home() {
                 </div>
                 <p className="conn-desc">Runtime C++26 nativo, arquivos e persistência de eventos no disco local.</p>
                 <div className="conn-permissions">
-                  <span className="perm-ok">✓ Leitura e escrita no ledger local</span>
+                  <span className="perm-ok">✓ Leitura e escrita no ledger local ({ledgerEventsCount} eventos auditáveis)</span>
                   <span className="perm-ok">✓ Execução determinística local</span>
                 </div>
               </article>
 
               <article className="connection-card">
                 <div className="conn-header">
-                  <span className="conn-status-dot is-live" />
+                  <span className={`conn-status-dot ${connection === "local" ? "is-live" : ""}`} />
                   <strong>Provedor de Linguagem Local</strong>
-                  <span className="conn-tag">Loopback isolado</span>
+                  <span className="conn-tag">{connection === "local" ? "Loopback isolado" : "Prévia de linguagem"}</span>
                 </div>
-                <p className="conn-desc">Ollama / llama-server em 127.0.0.1. Nenhum dado sai da máquina.</p>
+                <p className="conn-desc">
+                  {connection === "local"
+                    ? "OpenAI-compatible local em 127.0.0.1. Nenhum dado sai da máquina."
+                    : "Gramática determinística em execução."}
+                </p>
                 <div className="conn-permissions">
-                  <span className="perm-ok">✓ Formulação de texto e candidatos</span>
-                  <span className="perm-no">— Nenhuma autoridade sobre o estado</span>
+                  <span className="perm-ok">✓ Proposição de texto e candidatos</span>
+                  <span className="perm-no">— Nenhuma autoridade de alteração direta de estado</span>
                 </div>
               </article>
 
@@ -847,7 +769,7 @@ export default function Home() {
                 </div>
                 <p className="conn-desc">Acesso a agendas remotas desativado por padrão.</p>
                 <div className="conn-permissions">
-                  <span className="perm-no">— Sem leitura ou sincronização externa</span>
+                  <span className="perm-no">— Sem leitura ou sincronização remota</span>
                 </div>
               </article>
             </div>
@@ -860,42 +782,15 @@ export default function Home() {
             <div className="exploration-header">
               <span className="section-kicker">Capacidade</span>
               <h2>Análise de Padrões e Evidências</h2>
-              <p>Observações baseadas em fatos e rotinas, sem julgamentos nem métricas de vaidade.</p>
+              <p>Observações baseadas em fatos e rotinas observadas no Ledger.</p>
             </div>
 
-            <div className="analysis-board">
-              <article className="analysis-card">
-                <h3>Distribuição de Foco Observada</h3>
-                <div className="pattern-bars">
-                  <div className="pattern-row">
-                    <span className="pattern-time">MANHÃ</span>
-                    <div className="pattern-bar-track">
-                      <div className="pattern-bar-fill" style={{ width: "85%" }} />
-                    </div>
-                    <span className="pattern-label">Trabalho concentrado (85%)</span>
-                  </div>
-                  <div className="pattern-row">
-                    <span className="pattern-time">INÍCIO DA TARDE</span>
-                    <div className="pattern-bar-track">
-                      <div className="pattern-bar-fill is-medium" style={{ width: "40%" }} />
-                    </div>
-                    <span className="pattern-label">Interrupções / Reuniões (40%)</span>
-                  </div>
-                  <div className="pattern-row">
-                    <span className="pattern-time">FIM DA TARDE</span>
-                    <div className="pattern-bar-track">
-                      <div className="pattern-bar-fill is-low" style={{ width: "65%" }} />
-                    </div>
-                    <span className="pattern-label">Retomadas fragmentadas (65%)</span>
-                  </div>
-                </div>
-
-                <div className="analysis-insight-quote">
-                  <p>
-                    “As intenções que você deixa para o fim da tarde são adiadas com maior frequência. Isso não significa que esse horário seja ruim; é apenas um padrão observado em 11 situações factuais.”
-                  </p>
-                </div>
-              </article>
+            <div className="factual-empty-card">
+              <span className="factual-badge">Estado Factual</span>
+              <h3>Ainda não tenho observações suficientes para encontrar um padrão.</h3>
+              <p>
+                O Lume não inventa métricas nem dashboards decorativos. À medida que intenções, adiamentos e confirmações reais forem acumulados no Ledger ao longo das semanas, esta superfície apresentará sínteses contextuais apoiadas em evidências concretas e amostras verificáveis.
+              </p>
             </div>
           </section>
         )}

@@ -1,0 +1,51 @@
+name: Lume CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test (C++26 & Web)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install C++ dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libcurl4-openssl-dev nlohmann-json3-dev g++-14
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DLUME_BUILD_TESTS=ON \
+            -DLUME_WITH_LOCAL_LLM=ON
+
+      - name: Build C++ Core
+        run: cmake --build build
+
+      - name: Run C++ Tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Web Dependencies
+        working-directory: web
+        run: npm ci || npm install
+
+      - name: Run Web Tests & Contract Suite
+        working-directory: web
+        run: |
+          npm test
+          npm run test:local

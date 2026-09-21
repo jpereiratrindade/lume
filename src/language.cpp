@@ -115,71 +115,43 @@ PlanProposalCandidate DeterministicLanguage::propose_plan(const PlanRequest& req
     std::time_t raw = Clock::to_time_t(ref);
     std::tm local{};
     localtime_r(&raw, &local);
+    local.tm_hour = 9;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    TimePoint base_slot{std::chrono::seconds{std::mktime(&local)}};
 
-    if (candidate.horizon == "week") {
-        candidate.summary = "Preparei uma proposta estruturada para tua semana.";
-        local.tm_hour = 9;
-        local.tm_min = 0;
-        local.tm_sec = 0;
+    if (request.open_intentions.empty()) {
+        candidate.summary = "Não há intenções abertas registradas para organizar.";
+        candidate.points_of_attention.push_back("O teu horizonte está livre de intenções pendentes.");
+        return candidate;
+    }
 
-        TimePoint base{std::chrono::seconds{std::mktime(&local)}};
-        std::vector<std::pair<std::string, std::string>> days = {
-            {"Segunda — Pesquisa e foco profundo", "focus"},
-            {"Terça — Alinhamentos e reuniões", "meeting"},
-            {"Quarta — Redação e síntese", "focus"},
-            {"Quinta — Campo e execuções externas", "focus"},
-            {"Sexta — Revisão semanal e retrospectiva", "review"},
-        };
+    const auto count = request.open_intentions.size();
+    candidate.summary = "Tenho informação para organizar " + std::to_string(count) +
+                        (count == 1 ? " intenção real. " : " intenções reais. ") +
+                        "O restante do horizonte permanece livre.";
 
-        for (std::size_t i = 0; i < days.size(); ++i) {
-            auto start = base + std::chrono::hours{static_cast<int64_t>(i * 24)};
-            auto end = start + std::chrono::hours{4};
-            candidate.blocks.push_back(PlanBlock{
-                .title = days[i].first,
-                .start = start,
-                .end = end,
-                .category = days[i].second,
-                .intention_id = 0,
-            });
-        }
-        candidate.points_of_attention.push_back("Terça-feira possui alta fragmentação de contexto.");
-        candidate.points_of_attention.push_back("Quarta-feira possui uma janela limpa de 4h para trabalho contínuo.");
+    auto current_slot = base_slot;
+    for (const auto& item : request.open_intentions) {
+        // Use intention's window_start if in the future, otherwise use sequential slot
+        auto block_start = (item.window_start > ref) ? item.window_start : current_slot;
+        auto block_end = block_start + std::chrono::hours{2};
+
+        candidate.blocks.push_back(PlanBlock{
+            .title = item.subject,
+            .start = block_start,
+            .end = block_end,
+            .category = "focus",
+            .intention_id = item.id,
+        });
+        current_slot = block_end + std::chrono::minutes{30};
+    }
+
+    if (count == 1) {
+        candidate.points_of_attention.push_back("Uma única intenção prioritária alocada em bloco protegido de 2h.");
     } else {
-        // Horizon: morning or day
-        candidate.summary = "Preparei uma proposta para o teu período da manhã.";
-        local.tm_hour = 9;
-        local.tm_min = 0;
-        local.tm_sec = 0;
-        TimePoint block_start{std::chrono::seconds{std::mktime(&local)}};
-
-        if (request.open_intentions.empty()) {
-            candidate.blocks.push_back(PlanBlock{
-                .title = "Bloco de foco prioritário",
-                .start = block_start,
-                .end = block_start + std::chrono::hours{2},
-                .category = "focus",
-                .intention_id = 0,
-            });
-            candidate.blocks.push_back(PlanBlock{
-                .title = "Alinhamentos e revisão",
-                .start = block_start + std::chrono::hours{2},
-                .end = block_start + std::chrono::hours{3},
-                .category = "review",
-                .intention_id = 0,
-            });
-        } else {
-            for (const auto& item : request.open_intentions) {
-                candidate.blocks.push_back(PlanBlock{
-                    .title = item.subject,
-                    .start = block_start,
-                    .end = block_start + std::chrono::hours{2},
-                    .category = "focus",
-                    .intention_id = item.id,
-                });
-                block_start = block_start + std::chrono::hours{2};
-            }
-            candidate.points_of_attention.push_back("Intenção alocada no início da manhã para proteger concentração.");
-        }
+        candidate.points_of_attention.push_back("Intenções distribuídas com intervalo de respiro entre blocos.");
     }
 
     return candidate;
