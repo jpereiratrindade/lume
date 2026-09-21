@@ -435,6 +435,162 @@ body {
   border-color: var(--border-medium);
   transform: translateY(-1px);
 }
+.presence-intentions-section {
+  margin-top: 3rem;
+  width: 100%;
+  max-width: 680px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.intentions-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.intentions-section-header h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink-primary);
+}
+
+.intentions-subtitle {
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+
+.intentions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.intention-card {
+  padding: 0.85rem 1rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.intention-card.open {
+  border-left: 3px solid var(--accent-ember);
+}
+
+.intention-card.active {
+  border-left: 3px solid var(--accent-sage);
+  background: rgba(87, 117, 107, 0.05);
+}
+
+.intention-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.25rem;
+}
+
+.intention-title-row strong {
+  font-size: 0.92rem;
+  color: var(--ink-primary);
+}
+
+.status-pill {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ink-secondary);
+}
+
+.status-pill.open {
+  background: rgba(201, 101, 60, 0.12);
+  color: var(--accent-ember);
+}
+
+.status-pill.active {
+  background: rgba(87, 117, 107, 0.15);
+  color: var(--accent-sage);
+}
+
+.intention-meta {
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.meta-sep {
+  opacity: 0.5;
+}
+
+.source-tag {
+  font-family: monospace;
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
+
+.empty-intentions-card {
+  padding: 1.25rem;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+}
+
+.expressions-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.history-time {
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  font-family: monospace;
+  min-width: 45px;
+}
+
+.history-text {
+  flex: 1;
+  color: var(--ink-primary);
+  font-weight: 500;
+}
+
+.epistemic-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  color: var(--ink-secondary);
+  font-family: monospace;
+}
 
 /* ==========================================================================
    PROFUNDIDADE 2: ORQUESTRAÇÃO (PROJEÇÃO DE PLANEJAMENTO)

@@ -54,10 +54,18 @@ type AttentionCandidate = {
   is_active_now: boolean;
 };
 
+type ExpressionRecord = {
+  id: number;
+  recorded_at: string;
+  text: string;
+  epistemic_class: string;
+};
+
 type LumeState = {
   state_version?: number;
   ledger_events_count?: number;
   attention_candidate?: AttentionCandidate | null;
+  expressions?: ExpressionRecord[];
   intentions: Intention[];
   interactions: Array<{
     id: number;
@@ -159,6 +167,7 @@ export default function Home() {
   const [connection, setConnection] = useState<Connection>("checking");
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
   const [messages, setMessages] = useState<Message[]>([]);
+  const [expressions, setExpressions] = useState<ExpressionRecord[]>([]);
   const [intentions, setIntentions] = useState<Intention[]>([]);
   const [attentionCandidate, setAttentionCandidate] = useState<AttentionCandidate | null>(null);
   const [automations, setAutomations] = useState<AutomationProposal[]>([]);
@@ -183,6 +192,7 @@ export default function Home() {
       const response = await fetch(`${bridge}/api/inspect`);
       if (response.ok) {
         const state = (await response.json()) as LumeState;
+        setExpressions(state.expressions ?? []);
         setIntentions(state.intentions ?? []);
         setAttentionCandidate(state.attention_candidate ?? null);
         if (typeof state.ledger_events_count === "number") {
@@ -762,6 +772,45 @@ export default function Home() {
                 </button>
               </div>
             </div>
+
+            {/* Intenções Declaradas sob Custódia Local */}
+            <div className="presence-intentions-section">
+              <div className="intentions-section-header">
+                <div>
+                  <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Contexto Preservado</span>
+                  <h3>Intenções Declaradas no Ledger ({intentions.length})</h3>
+                </div>
+                <span className="intentions-subtitle">Persistência SQLite WAL imutável</span>
+              </div>
+
+              {intentions.length > 0 ? (
+                <div className="intentions-list">
+                  {intentions.map((item) => (
+                    <article key={item.id} className={`intention-card ${item.status}`}>
+                      <div className="intention-main" style={{ width: "100%" }}>
+                        <div className="intention-title-row">
+                          <span className={`status-pill ${item.status}`}>
+                            {item.status === "open" ? "Aberta" : item.status === "active" ? "Foco Atual" : item.status}
+                          </span>
+                          <strong>{item.subject}</strong>
+                        </div>
+                        <div className="intention-meta">
+                          <span>Janela: {shortWindow(item.window_start)} até {shortWindow(item.window_end)}</span>
+                          <span className="meta-sep">·</span>
+                          <span>Autoridade: {item.authority === "user" ? "usuário" : item.authority}</span>
+                          <span className="meta-sep">·</span>
+                          <span className="source-tag">{item.interpretation_source}</span>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-intentions-card">
+                  <p>Nenhuma intenção pendente registrada ainda. Fale com o Lume no campo acima para preservar intenções ou organizar seu dia.</p>
+                </div>
+              )}
+            </div>
           </section>
         )}
 
@@ -864,9 +913,24 @@ export default function Home() {
               </div>
             ) : (
               <div className="empty-plan-prompt">
-                <p>Nenhum plano ativo. Clique em "Organizar minha semana" ou peça uma reorganização.</p>
+                {openIntentions.length > 0 ? (
+                  <div style={{ marginBottom: "1.5rem", textAlign: "left", width: "100%", maxWidth: "560px", background: "var(--bg-subtle)", padding: "1.2rem", borderRadius: "8px", border: "1px solid var(--border-subtle)" }}>
+                    <strong style={{ display: "block", marginBottom: "0.6rem", color: "var(--ink-primary)" }}>
+                      {openIntentions.length} intenção(ões) aberta(s) aguardando alocação na agenda:
+                    </strong>
+                    <ul style={{ paddingLeft: "1.2rem", margin: 0, fontSize: "0.9rem", color: "var(--ink-secondary)" }}>
+                      {openIntentions.map((i) => (
+                        <li key={i.id} style={{ marginBottom: "0.3rem" }}>
+                          <strong>{i.subject}</strong> — janela: {shortWindow(i.window_start)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p>Nenhum plano ativo. Clique em "Organizar minha semana" ou peça uma reorganização.</p>
+                )}
                 <button type="button" className="btn-primary" onClick={() => void triggerPlan("week")}>
-                  Gerar proposta de planejamento
+                  ✦ Gerar proposta de planejamento com estas intenções
                 </button>
               </div>
             )}
@@ -1153,6 +1217,32 @@ export default function Home() {
                   <span className="perm-no">— Sem leitura ou sincronização remota</span>
                 </div>
               </article>
+            </div>
+
+            {/* Histórico e Auditoria de Expressões Preservadas */}
+            <div className="presence-intentions-section" style={{ maxWidth: "100%", marginTop: "2rem" }}>
+              <div className="intentions-section-header">
+                <div>
+                  <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Auditoria Factual</span>
+                  <h3>Histórico de Expressões Preservadas no Ledger ({expressions.length})</h3>
+                </div>
+                <span className="intentions-subtitle">Sequência monotônica no SQLite WAL</span>
+              </div>
+              {expressions.length > 0 ? (
+                <div className="expressions-history-list">
+                  {expressions.map((exp) => (
+                    <div key={exp.id} className="history-item">
+                      <span className="history-time">#{exp.id} · {formatBlockTime(exp.recorded_at)}</span>
+                      <strong className="history-text">"{exp.text}"</strong>
+                      <span className="epistemic-badge">{exp.epistemic_class}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-intentions-card">
+                  <p>Nenhuma expressão registrada ainda.</p>
+                </div>
+              )}
             </div>
           </section>
         )}
