@@ -120,6 +120,7 @@ const std::filesystem::path& Store::path() const noexcept { return path_; }
 State Store::load() const {
     State state;
     if (!std::filesystem::exists(path_)) return state;
+    if (std::filesystem::is_regular_file(path_) && std::filesystem::file_size(path_) == 0) return state;
 
     std::ifstream input(path_);
     if (!input) throw std::runtime_error("could not open state file: " + path_.string());

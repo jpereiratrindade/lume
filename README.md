@@ -36,6 +36,28 @@ Uma conversa interativa começa com:
 ./build/lume
 ```
 
+### Interface web
+
+Depois de compilar o runtime, a experiência web conectada começa com:
+
+```bash
+cd web
+npm install
+npm run dev:local
+```
+
+Abra `http://localhost:3000`. A interface conversa com o mesmo core e estado da
+CLI por uma ponte exclusivamente local. `npm run dev` inicia apenas a prévia de
+experiência, sem estado canônico.
+
+Para validar também o contrato entre a interface e o runtime:
+
+```bash
+cd web
+npm test
+npm run test:local
+```
+
 Para ver qual camada linguística foi selecionada:
 
 ```bash

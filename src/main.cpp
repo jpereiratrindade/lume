@@ -7,6 +7,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -31,7 +32,35 @@ std::string join(const std::vector<std::string>& values, std::size_t begin) {
     return result;
 }
 
-void print_outcome(const lume::Outcome& outcome, bool explain) {
+std::string json_escape(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const char byte : value) {
+        const auto character = static_cast<unsigned char>(byte);
+        switch (character) {
+            case '"': result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:
+                if (character < 0x20) result += "?";
+                else result.push_back(static_cast<char>(character));
+        }
+    }
+    return result;
+}
+
+void print_outcome(const lume::Outcome& outcome, bool explain, bool json) {
+    if (json) {
+        std::cout << "{\"decision\":\"" << json_escape(outcome.decision)
+                  << "\",\"message\":\"" << json_escape(outcome.message)
+                  << "\",\"reason\":\"" << json_escape(outcome.reason)
+                  << "\",\"changed\":" << (outcome.changed ? "true" : "false") << "}\n";
+        return;
+    }
     if (!outcome.message.empty()) std::cout << outcome.message << '\n';
     else std::cout << outcome.decision << '\n';
     if (explain) std::cout << "Por quê: " << outcome.reason << '\n';
@@ -48,7 +77,7 @@ void print_help() {
         << "  lume doctor                mostra o provedor linguístico ativo\n"
         << "  lume inspect               mostra fatos, intenções e proveniência\n"
         << "  lume                       inicia uma conversa\n\n"
-        << "Opções: --at AAAA-MM-DDTHH:MM[:SS], --state CAMINHO, --explain\n";
+        << "Opções: --at AAAA-MM-DDTHH:MM[:SS], --state CAMINHO, --explain, --json\n";
 }
 
 lume::TimePoint now() {
@@ -91,6 +120,7 @@ int main(int argc, char** argv) {
         auto state_path = default_state_path();
         std::optional<lume::TimePoint> specified_time;
         bool explain = false;
+        bool json = false;
 
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
@@ -103,6 +133,8 @@ int main(int argc, char** argv) {
                 if (!specified_time) throw std::runtime_error("data inválida em --at");
             } else if (argument == "--explain") {
                 explain = true;
+            } else if (argument == "--json") {
+                json = true;
             } else if (argument == "--help" || argument == "-h") {
                 print_help();
                 return 0;
@@ -124,10 +156,10 @@ int main(int argc, char** argv) {
             std::cout << "Provedor linguístico: " << assistant.language_name() << '\n'
                       << "Estado: " << state_path << '\n';
         }
-        else if (command == "observe") print_outcome(assistant.observe(moment), explain);
-        else if (command == "say") print_outcome(assistant.say(join(positional, 1), moment), explain);
-        else if (command == "reply") print_outcome(assistant.reply(join(positional, 1), moment), explain);
-        else print_outcome(assistant.say(join(positional, 0), moment), explain);
+        else if (command == "observe") print_outcome(assistant.observe(moment), explain, json);
+        else if (command == "say") print_outcome(assistant.say(join(positional, 1), moment), explain, json);
+        else if (command == "reply") print_outcome(assistant.reply(join(positional, 1), moment), explain, json);
+        else print_outcome(assistant.say(join(positional, 0), moment), explain, json);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "lume: " << error.what() << '\n';

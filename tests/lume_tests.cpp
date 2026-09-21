@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -108,6 +109,16 @@ void semantic_validation_test(const std::filesystem::path& path) {
     expect(state.intentions.empty(), "core must reject contradictory candidate precision");
 }
 
+void empty_state_file_test(const std::filesystem::path& path) {
+    std::ofstream{path};
+    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
+    const auto outcome = assistant.say("Uma expressão ainda sem momento definido.",
+                                       at("2026-09-21T18:00:00"));
+    expect(outcome.decision == "REMEMBERED", "an empty state file should initialize cleanly");
+    expect(lume::Store{path}.load().expressions.size() == 1,
+           "initialized state should preserve the expression");
+}
+
 }  // namespace
 
 int main() {
@@ -120,6 +131,7 @@ int main() {
         lifecycle_test(base / "lifecycle.state");
         authority_boundary_test(base / "authority.state");
         semantic_validation_test(base / "semantic-validation.state");
+        empty_state_file_test(base / "empty.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;
