@@ -216,8 +216,8 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
                     "a expressão contém uma intenção e uma janela temporal parcial", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
         }
 
-        return {"REMEMBERED", "Certo. Guardei exatamente como você disse.",
-                "a expressão foi preservada; ainda não há base para decidir quando agir", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+        return {"REMEMBERED", "Certo. Guardei isso como contexto. Ainda não transformei em uma intenção.",
+                "a expressão foi preservada, mas ainda não há estrutura suficiente para o Lume agir", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
     });
 }
 
@@ -441,6 +441,11 @@ Outcome Assistant::create_intention(std::string_view subject, TimePoint window_s
             .attention_candidate = compute_attention_candidate(now),
         };
     }
+    if (window_end <= window_start) {
+        return {"INVALID_INTENTION", "A janela da intenção precisa terminar depois do início.",
+                "validação de janela temporal", false, "text", std::nullopt, std::nullopt, {},
+                compute_attention_candidate(now)};
+    }
 
     return ledger_.with_exclusive_lock([&]() -> Outcome {
         auto state = ledger_.project_state();
@@ -490,6 +495,74 @@ Outcome Assistant::create_intention(std::string_view subject, TimePoint window_s
             .emitted_notifications = {},
             .attention_candidate = compute_attention_candidate(now),
         };
+    });
+}
+
+Outcome Assistant::update_intention(std::uint64_t intention_id, std::string_view subject,
+                                    TimePoint window_start, TimePoint window_end, TimePoint now) {
+    const auto clean_subject = trim(std::string(subject));
+    if (clean_subject.empty() || window_end <= window_start) {
+        return {"INVALID_INTENTION", "Informe um assunto e uma janela temporal válida.",
+                "validação de edição da intenção", false, "text", std::nullopt, std::nullopt, {},
+                compute_attention_candidate(now)};
+    }
+
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        const auto state = ledger_.project_state();
+        const auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
+                                     [intention_id](const auto& item) { return item.id == intention_id; });
+        if (it == state.intentions.end()) {
+            return {"INTENTION_NOT_FOUND", "Intenção não encontrada.", "identificador inexistente",
+                    false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+        }
+
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::user_declared,
+            .payload = EventIntentionUpdated{
+                .intention_id = intention_id,
+                .subject = clean_subject,
+                .window_start = window_start,
+                .window_end = window_end,
+                .precision = "direct",
+                .reason = "edição explícita do usuário",
+                .at = now,
+            },
+        });
+
+        return {"INTENTION_UPDATED", "Intenção atualizada.", "edição explícita do usuário",
+                true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+    });
+}
+
+Outcome Assistant::delete_intention(std::uint64_t intention_id, TimePoint now) {
+    return ledger_.with_exclusive_lock([&]() -> Outcome {
+        const auto state = ledger_.project_state();
+        const auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
+                                     [intention_id](const auto& item) { return item.id == intention_id; });
+        if (it == state.intentions.end()) {
+            return {"INTENTION_NOT_FOUND", "Intenção não encontrada.", "identificador inexistente",
+                    false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+        }
+
+        const auto subject = it->subject;
+        ledger_.append(EventRecord{
+            .sequence_number = 0,
+            .recorded_at = now,
+            .authority = "user",
+            .epistemic_class = EpistemicClass::user_declared,
+            .payload = EventIntentionDeleted{
+                .intention_id = intention_id,
+                .reason = "exclusão explícita do usuário",
+                .at = now,
+            },
+        });
+
+        return {"INTENTION_DELETED", "Intenção '" + subject + "' excluída.",
+                "exclusão explícita do usuário; o evento permanece auditável no ledger",
+                true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
     });
 }
 

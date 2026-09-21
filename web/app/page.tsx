@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "person" | "lume";
 type Connection = "checking" | "local" | "preview";
@@ -169,6 +169,13 @@ function formatBlockTime(value: string) {
   }).format(date);
 }
 
+function toDateTimeLocal(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
 export default function Home() {
   const [connection, setConnection] = useState<Connection>("checking");
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
@@ -187,6 +194,7 @@ export default function Home() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [intentionFilter, setIntentionFilter] = useState<"open" | "completed" | "all">("open");
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [editingIntentionId, setEditingIntentionId] = useState<number | null>(null);
   const [newSubject, setNewSubject] = useState("");
   const [newStart, setNewStart] = useState("");
   const [newEnd, setNewEnd] = useState("");
@@ -205,7 +213,7 @@ export default function Home() {
     return intentions;
   }, [intentions, intentionFilter]);
 
-  async function refreshContext() {
+  const refreshContext = useCallback(async () => {
     try {
       const response = await fetch(`${bridge}/api/inspect`);
       if (response.ok) {
@@ -232,7 +240,7 @@ export default function Home() {
     } catch {
       // Offline / preview mode fallback
     }
-  }
+  }, [bridge]);
 
   useEffect(() => {
     let active = true;
@@ -279,7 +287,7 @@ export default function Home() {
       window.clearTimeout(initialClock);
       window.clearInterval(timer);
     };
-  }, []);
+  }, [bridge, refreshContext]);
 
   function append(role: Role, text: string, reason?: string, plan_proposal?: PlanProposal) {
     setMessages((current) => [...current, { id: nextId.current++, role, text, reason, plan_proposal }]);
@@ -325,7 +333,7 @@ export default function Home() {
         // Preview mode
         const isWeek = horizon === "week";
         const proposal: PlanProposal = {
-          id: Date.now(),
+          id: nextId.current++,
           horizon: isWeek ? "Semana" : "Manhã",
           summary: isWeek
             ? "Preparei uma proposta estruturada para tua semana."
@@ -441,7 +449,7 @@ export default function Home() {
         await refreshContext();
       } else {
         const newAuto: AutomationProposal = {
-          id: Date.now(),
+          id: nextId.current++,
           title,
           trigger_when,
           condition_if,
@@ -484,6 +492,30 @@ export default function Home() {
     }
   }
 
+  function closeIntentionModal() {
+    setIsNewModalOpen(false);
+    setEditingIntentionId(null);
+    setNewSubject("");
+    setNewStart("");
+    setNewEnd("");
+  }
+
+  function openNewIntentionModal() {
+    setEditingIntentionId(null);
+    setNewSubject("");
+    setNewStart("");
+    setNewEnd("");
+    setIsNewModalOpen(true);
+  }
+
+  function openEditIntentionModal(intention: Intention) {
+    setEditingIntentionId(intention.id);
+    setNewSubject(intention.subject);
+    setNewStart(toDateTimeLocal(intention.window_start));
+    setNewEnd(toDateTimeLocal(intention.window_end));
+    setIsNewModalOpen(true);
+  }
+
   async function handleCreateIntentionDirect(subject: string, start?: string, end?: string) {
     if (!subject.trim()) return;
     setProcessing(true);
@@ -522,10 +554,63 @@ export default function Home() {
       append("lume", "Falha ao criar intenção.", err instanceof Error ? err.message : "Erro");
     } finally {
       setProcessing(false);
-      setIsNewModalOpen(false);
-      setNewSubject("");
-      setNewStart("");
-      setNewEnd("");
+      closeIntentionModal();
+    }
+  }
+
+  async function handleEditIntention(id: number, subject: string, start: string, end: string) {
+    if (!subject.trim() || !start || !end) return;
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/intentions/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, subject: subject.trim(), start, end }),
+        });
+        if (!response.ok) throw new Error("Erro ao editar intenção.");
+        const outcome = (await response.json()) as LumeOutcome;
+        append("lume", outcome.message, outcome.reason);
+        await refreshContext();
+      } else {
+        setIntentions((current) => current.map((item) => item.id === id
+          ? {
+              ...item,
+              subject: subject.trim(),
+              window_start: new Date(start).toISOString(),
+              window_end: new Date(end).toISOString(),
+              precision: "direct",
+            }
+          : item));
+      }
+    } catch (error) {
+      append("lume", "Falha ao editar intenção.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
+      closeIntentionModal();
+    }
+  }
+
+  async function handleDeleteIntention(id: number) {
+    setProcessing(true);
+    try {
+      if (connection === "local") {
+        const response = await fetch(`${bridge}/api/intentions/delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        if (!response.ok) throw new Error("Erro ao excluir intenção.");
+        const outcome = (await response.json()) as LumeOutcome;
+        append("lume", outcome.message, outcome.reason);
+        await refreshContext();
+      } else {
+        setIntentions((current) => current.filter((item) => item.id !== id));
+      }
+    } catch (error) {
+      append("lume", "Falha ao excluir intenção.", error instanceof Error ? error.message : "Erro");
+    } finally {
+      setProcessing(false);
     }
   }
 
@@ -709,8 +794,8 @@ export default function Home() {
     }
     append(
       "lume",
-      "Certo. Guardei exatamente como você disse.",
-      "Ainda não há informação suficiente para decidir quando agir — e tudo bem.",
+      "Certo. Guardei isso como contexto. Ainda não transformei em uma intenção.",
+      "A expressão foi preservada, mas ainda não há estrutura suficiente para o Lume agir.",
     );
   }
 
@@ -743,8 +828,6 @@ export default function Home() {
 
   const today = now ? humanDate(now) : "Hoje";
   const welcome = now ? greeting(now) : "Olá.";
-
-  const nextRelevantIntention = openIntentions.length > 0 ? openIntentions[openIntentions.length - 1] : null;
 
   return (
     <main className="lume-shell">
@@ -896,7 +979,7 @@ export default function Home() {
             <div className="presence-intentions-section">
               <div className="intentions-section-header">
                 <div>
-                  <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Contexto Preservado</span>
+                  <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Intenções</span>
                   <h3>Intenções Declaradas no Ledger ({filteredIntentions.length})</h3>
                 </div>
                 <div style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
@@ -926,7 +1009,7 @@ export default function Home() {
                   <button
                     type="button"
                     className="btn-new-intention"
-                    onClick={() => setIsNewModalOpen(true)}
+                    onClick={openNewIntentionModal}
                   >
                     + Nova Intenção
                   </button>
@@ -958,6 +1041,16 @@ export default function Home() {
                         </div>
 
                         <div className="intention-card-actions">
+                          {item.status !== "dismissed" && (
+                            <button
+                              type="button"
+                              className="btn-action-defer"
+                              disabled={processing}
+                              onClick={() => openEditIntentionModal(item)}
+                            >
+                              ✎ Editar
+                            </button>
+                          )}
                           {item.status !== "completed" && item.status !== "dismissed" && (
                             <button
                               type="button"
@@ -980,17 +1073,19 @@ export default function Home() {
                               ⏰ Amanhã
                             </button>
                           )}
-                          {item.status !== "dismissed" && (
-                            <button
-                              type="button"
-                              className="btn-action-dismiss"
-                              disabled={processing}
-                              onClick={() => handleUpdateIntentionStatus(item.id, "dismissed")}
-                              title="Descartar do horizonte"
-                            >
-                              ✕
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            className="btn-action-dismiss"
+                            disabled={processing}
+                            onClick={() => {
+                              if (window.confirm(`Excluir a intenção “${item.subject}”?`)) {
+                                void handleDeleteIntention(item.id);
+                              }
+                            }}
+                            title="Excluir intenção"
+                          >
+                            Excluir
+                          </button>
                         </div>
                       </article>
                     );
@@ -998,7 +1093,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="empty-intentions-card">
-                  <p>Nenhuma intenção encontrada para este filtro. Use o formulário acima ou clique em "+ Nova Intenção".</p>
+                  <p>Nenhuma intenção encontrada para este filtro. Use o formulário acima ou clique em “+ Nova Intenção”.</p>
                 </div>
               )}
             </div>
@@ -1118,7 +1213,7 @@ export default function Home() {
                     </ul>
                   </div>
                 ) : (
-                  <p>Nenhum plano ativo. Clique em "Organizar minha semana" ou peça uma reorganização.</p>
+                  <p>Nenhum plano ativo. Clique em “Organizar minha semana” ou peça uma reorganização.</p>
                 )}
                 <button type="button" className="btn-primary" onClick={() => void triggerPlan("week")}>
                   ✦ Gerar proposta de planejamento com estas intenções
@@ -1424,7 +1519,7 @@ export default function Home() {
                   {expressions.map((exp) => (
                     <div key={exp.id} className="history-item">
                       <span className="history-time">#{exp.id} · {formatBlockTime(exp.recorded_at)}</span>
-                      <strong className="history-text">"{exp.text}"</strong>
+                      <strong className="history-text">“{exp.text}”</strong>
                       <span className="epistemic-badge">{exp.epistemic_class}</span>
                     </div>
                   ))}
@@ -1471,16 +1566,16 @@ export default function Home() {
         </div>
       </footer>
 
-      {/* Modal de Criação Direta de Intenção */}
+      {/* Modal de criação e edição de intenção */}
       {isNewModalOpen && (
-        <div className="lume-modal-overlay" onClick={() => setIsNewModalOpen(false)}>
-          <div className="lume-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="lume-modal-overlay">
+          <div className="lume-modal-card" role="dialog" aria-modal="true" aria-labelledby="intention-modal-title">
             <div className="lume-modal-header">
-              <h3>Nova Intenção Declarada</h3>
+              <h3 id="intention-modal-title">{editingIntentionId === null ? "Nova Intenção" : "Editar Intenção"}</h3>
               <button
                 type="button"
                 className="btn-action-dismiss"
-                onClick={() => setIsNewModalOpen(false)}
+                onClick={closeIntentionModal}
               >
                 ✕
               </button>
@@ -1489,7 +1584,11 @@ export default function Home() {
               className="modal-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                void handleCreateIntentionDirect(newSubject, newStart || undefined, newEnd || undefined);
+                if (editingIntentionId === null) {
+                  void handleCreateIntentionDirect(newSubject, newStart || undefined, newEnd || undefined);
+                } else {
+                  void handleEditIntention(editingIntentionId, newSubject, newStart, newEnd);
+                }
               }}
             >
               <div className="form-field">
@@ -1501,11 +1600,10 @@ export default function Home() {
                   placeholder="Ex: Pagar a conta de luz, Escrever relatório..."
                   value={newSubject}
                   onChange={(e) => setNewSubject(e.target.value)}
-                  autoFocus
                 />
               </div>
               <div className="form-field">
-                <label htmlFor="modal-start">Início da janela temporal (opcional):</label>
+                <label htmlFor="modal-start">Início da janela temporal{editingIntentionId === null ? " (opcional)" : ""}:</label>
                 <input
                   id="modal-start"
                   type="datetime-local"
@@ -1514,7 +1612,7 @@ export default function Home() {
                 />
               </div>
               <div className="form-field">
-                <label htmlFor="modal-end">Término da janela temporal (opcional):</label>
+                <label htmlFor="modal-end">Término da janela temporal{editingIntentionId === null ? " (opcional)" : ""}:</label>
                 <input
                   id="modal-end"
                   type="datetime-local"
@@ -1526,16 +1624,20 @@ export default function Home() {
                 <button
                   type="button"
                   className="btn-discard-plan"
-                  onClick={() => setIsNewModalOpen(false)}
+                  onClick={closeIntentionModal}
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   className="btn-apply-plan"
-                  disabled={!newSubject.trim() || processing}
+                  disabled={
+                    !newSubject.trim() ||
+                    processing ||
+                    (editingIntentionId !== null && (!newStart || !newEnd))
+                  }
                 >
-                  Salvar no Ledger
+                  {editingIntentionId === null ? "Criar intenção" : "Salvar alterações"}
                 </button>
               </div>
             </form>

@@ -48,6 +48,22 @@ struct EventIntentionDeferred {
     TimePoint at{};
 };
 
+struct EventIntentionUpdated {
+    std::uint64_t intention_id{};
+    std::string subject;
+    TimePoint window_start{};
+    TimePoint window_end{};
+    std::string precision{"direct"};
+    std::string reason;
+    TimePoint at{};
+};
+
+struct EventIntentionDeleted {
+    std::uint64_t intention_id{};
+    std::string reason;
+    TimePoint at{};
+};
+
 struct EventInteractionRecorded {
     std::uint64_t id{};
     std::uint64_t intention_id{};
@@ -120,6 +136,8 @@ using EventPayload = std::variant<
     EventIntentionDerived,
     EventIntentionStatusChanged,
     EventIntentionDeferred,
+    EventIntentionUpdated,
+    EventIntentionDeleted,
     EventInteractionRecorded,
     EventPlanProposed,
     EventPlanApplied,
@@ -183,4 +201,3 @@ private:
 };
 
 }  // namespace lume
-

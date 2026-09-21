@@ -121,8 +121,12 @@ void empty_state_file_test(const std::filesystem::path& path) {
     const auto outcome = assistant.say("Uma expressão ainda sem momento definido.",
                                        at("2026-09-21T18:00:00"));
     expect(outcome.decision == "REMEMBERED", "an empty state file should initialize cleanly");
+    expect(outcome.message.find("contexto") != std::string::npos,
+           "an unresolved expression should be acknowledged as context, not as an intention");
     expect(lume::Ledger{path}.project_state().expressions.size() == 1,
            "initialized state should preserve the expression");
+    expect(lume::Ledger{path}.project_state().intentions.empty(),
+           "preserving context must not fabricate an actionable intention");
 }
 
 void ambiguous_reply_test(const std::filesystem::path& path) {
@@ -458,23 +462,41 @@ void intention_crud_lifecycle_test(const std::filesystem::path& path) {
     expect(state.intentions.size() == 1, "must have 1 intention");
     const auto int_id = state.intentions.front().id;
 
-    // 2. Status Update to Active
+    // 2. Update
+    const auto updated = assistant.update_intention(int_id, "Estudar C++ moderno",
+                                                    at("2026-09-21T10:00:00"),
+                                                    at("2026-09-21T12:00:00"),
+                                                    at("2026-09-21T08:30:00"));
+    expect(updated.decision == "INTENTION_UPDATED", "update intention must succeed");
+    state = assistant.ledger().project_state();
+    expect(state.intentions.front().subject == "Estudar C++ moderno", "subject must be updated");
+    expect(state.intentions.front().window_start == at("2026-09-21T10:00:00"),
+           "edited window start must be projected");
+
+    // 3. Status Update to Active
     const auto active_res = assistant.update_intention_status(int_id, lume::IntentionStatus::active, "foco iniciado", at("2026-09-21T09:05:00"));
     expect(active_res.decision == "INTENTION_STATUS_CHANGED", "status update to active must succeed");
     state = assistant.ledger().project_state();
     expect(state.intentions.front().status == lume::IntentionStatus::active, "status must be active");
 
-    // 3. Defer
+    // 4. Defer
     const auto defer_res = assistant.defer_intention(int_id, at("2026-09-22T09:00:00"), at("2026-09-22T11:00:00"), "adiado para amanhã", at("2026-09-21T10:00:00"));
     expect(defer_res.decision == "INTENTION_DEFERRED", "defer must succeed");
     state = assistant.ledger().project_state();
     expect(state.intentions.front().window_start == at("2026-09-22T09:00:00"), "window start must be updated");
 
-    // 4. Complete
+    // 5. Complete
     const auto comp_res = assistant.update_intention_status(int_id, lume::IntentionStatus::completed, "concluído", at("2026-09-22T11:00:00"));
     expect(comp_res.decision == "INTENTION_STATUS_CHANGED", "status update to completed must succeed");
     state = assistant.ledger().project_state();
     expect(state.intentions.front().status == lume::IntentionStatus::completed, "status must be completed");
+
+    // 6. Delete from the user projection while preserving the event ledger
+    const auto deleted = assistant.delete_intention(int_id, at("2026-09-22T11:01:00"));
+    expect(deleted.decision == "INTENTION_DELETED", "delete intention must succeed");
+    state = assistant.ledger().project_state();
+    expect(state.intentions.empty(), "deleted intention must leave the user projection");
+    expect(assistant.ledger().read_all().size() == 7, "CRUD history must remain auditable");
 }
 
 }  // namespace

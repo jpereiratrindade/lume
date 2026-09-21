@@ -25,7 +25,7 @@ function waitForBridge(child) {
     child.stderr.on("data", (chunk) => { errors += chunk; });
     child.stdout.on("data", (chunk) => {
       output += chunk;
-      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+      const match = output.match(/Ponte local do Lume em http:\/\/0\.0\.0\.0:(\d+)/);
       if (!match) return;
       clearTimeout(timer);
       resolvePromise(`http://127.0.0.1:${match[1]}`);
@@ -71,6 +71,7 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
   const health = await jsonRequest(`${baseUrl}/api/health`);
   assert.equal(health.response.status, 200);
   assert.equal(health.body.status, "ok");
+  assert.equal(health.response.headers.get("access-control-allow-origin"), allowedOrigin);
 
   const saved = await jsonRequest(`${baseUrl}/api/say`, {
     method: "POST",
@@ -105,6 +106,46 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
   assert.equal(inspected.body.intentions.length, 1);
   assert.equal(inspected.body.intentions[0].subject, "trabalhar no artigo");
 
+  const createdIntention = await jsonRequest(`${baseUrl}/api/intentions/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      subject: "Registro temporário",
+      start: "2026-09-23T10:00:00-0300",
+      end: "2026-09-23T11:00:00-0300",
+    }),
+  });
+  assert.equal(createdIntention.response.status, 200);
+  assert.equal(createdIntention.body.decision, "INTENTION_CREATED");
+
+  const afterCreate = await jsonRequest(`${baseUrl}/api/inspect`);
+  const temporaryIntention = afterCreate.body.intentions.find((item) => item.subject === "Registro temporário");
+  assert.ok(temporaryIntention);
+
+  const updatedIntention = await jsonRequest(`${baseUrl}/api/intentions/update`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: temporaryIntention.id,
+      subject: "Registro editado",
+      start: "2026-09-23T12:00:00-0300",
+      end: "2026-09-23T13:00:00-0300",
+    }),
+  });
+  assert.equal(updatedIntention.response.status, 200);
+  assert.equal(updatedIntention.body.decision, "INTENTION_UPDATED");
+
+  const deletedIntention = await jsonRequest(`${baseUrl}/api/intentions/delete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: temporaryIntention.id }),
+  });
+  assert.equal(deletedIntention.response.status, 200);
+  assert.equal(deletedIntention.body.decision, "INTENTION_DELETED");
+
+  const afterDelete = await jsonRequest(`${baseUrl}/api/inspect`);
+  assert.equal(afterDelete.body.intentions.some((item) => item.id === temporaryIntention.id), false);
+
   // Test automation endpoints
   const createAuto = await jsonRequest(`${baseUrl}/api/automations/create`, {
     method: "POST",
@@ -138,4 +179,10 @@ test("a ponte local preserva o contrato estruturado do runtime", async (context)
     headers: { origin: "https://example.invalid" },
   });
   assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get("access-control-allow-origin"), null);
+
+  const wrongLocalPort = await fetch(`${baseUrl}/api/inspect`, {
+    headers: { origin: "http://127.0.0.1:3001" },
+  });
+  assert.equal(wrongLocalPort.status, 403);
 });

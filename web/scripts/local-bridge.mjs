@@ -64,21 +64,30 @@ function isLoopback(address) {
   );
 }
 
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  try {
+    const { hostname, port: originPort, protocol } = new URL(origin);
+    return (
+      protocol === "http:" &&
+      originPort === String(webPort) &&
+      ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function corsHeaders(request) {
   const origin = request.headers.origin;
-  if (!origin) return {};
-  try {
-    const parsed = new URL(origin);
-    if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname)) {
-      return {
+  return isAllowedOrigin(origin)
+    ? {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
         Vary: "Origin",
-      };
-    }
-  } catch {}
-  return {};
+      }
+    : {};
 }
 
 function send(request, response, status, payload) {
@@ -119,7 +128,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   const origin = request.headers.origin;
-  if (origin && !allowedOrigins.has(origin)) {
+  if (origin && !isAllowedOrigin(origin)) {
     send(request, response, 403, { error: "Origem não autorizada." });
     return;
   }
@@ -197,6 +206,43 @@ const server = createServer(async (request, response) => {
       if (typeof body.end === "string" && body.end.trim()) args.push(body.end.trim());
       args.push("--json");
       send(request, response, 200, parseOutcome(await runLume(args)));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/intentions/update") {
+      const body = await readBody(request);
+      if (
+        typeof body.id !== "number" ||
+        typeof body.subject !== "string" ||
+        !body.subject.trim() ||
+        typeof body.start !== "string" ||
+        !body.start.trim() ||
+        typeof body.end !== "string" ||
+        !body.end.trim()
+      ) {
+        send(request, response, 400, { error: "Dados da intenção são obrigatórios para edição." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume([
+        "update-intention",
+        String(body.id),
+        body.subject.trim(),
+        body.start.trim(),
+        body.end.trim(),
+        "--json",
+      ])));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/intentions/delete") {
+      const body = await readBody(request);
+      if (typeof body.id !== "number") {
+        send(request, response, 400, { error: "ID da intenção é obrigatório." });
+        return;
+      }
+      send(request, response, 200, parseOutcome(await runLume([
+        "delete-intention",
+        String(body.id),
+        "--json",
+      ])));
       return;
     }
     if (request.method === "POST" && request.url === "/api/intentions/status") {

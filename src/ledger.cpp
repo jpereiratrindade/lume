@@ -241,6 +241,24 @@ std::pair<std::string, std::string> serialize_payload(const EventPayload& payloa
                 {"at", format_time(event.at)},
             };
             return {"INT_DEFERRED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventIntentionUpdated>) {
+            Json j{
+                {"intention_id", event.intention_id},
+                {"subject", event.subject},
+                {"window_start", format_time(event.window_start)},
+                {"window_end", format_time(event.window_end)},
+                {"precision", event.precision},
+                {"reason", event.reason},
+                {"at", format_time(event.at)},
+            };
+            return {"INT_UPDATED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventIntentionDeleted>) {
+            Json j{
+                {"intention_id", event.intention_id},
+                {"reason", event.reason},
+                {"at", format_time(event.at)},
+            };
+            return {"INT_DELETED", j.dump()};
         } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
             Json j{
                 {"id", event.id},
@@ -368,6 +386,24 @@ EventPayload deserialize_payload(std::string_view type, const std::string& json_
             .new_start = parse_time(j.at("new_start").get<std::string>()).value_or(TimePoint{}),
             .new_end = parse_time(j.at("new_end").get<std::string>()).value_or(TimePoint{}),
             .precision = j.at("precision").get<std::string>(),
+            .reason = j.at("reason").get<std::string>(),
+            .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
+        };
+    }
+    if (type == "INT_UPDATED") {
+        return EventIntentionUpdated{
+            .intention_id = j.at("intention_id").get<std::uint64_t>(),
+            .subject = j.at("subject").get<std::string>(),
+            .window_start = parse_time(j.at("window_start").get<std::string>()).value_or(TimePoint{}),
+            .window_end = parse_time(j.at("window_end").get<std::string>()).value_or(TimePoint{}),
+            .precision = j.at("precision").get<std::string>(),
+            .reason = j.at("reason").get<std::string>(),
+            .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
+        };
+    }
+    if (type == "INT_DELETED") {
+        return EventIntentionDeleted{
+            .intention_id = j.at("intention_id").get<std::uint64_t>(),
             .reason = j.at("reason").get<std::string>(),
             .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
         };
@@ -895,6 +931,21 @@ State Ledger::project_state() const {
                     }
                     it->last_interaction_at.reset();
                 }
+            } else if constexpr (std::is_same_v<T, EventIntentionUpdated>) {
+                auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
+                                       [&](const auto& item) { return item.id == event.intention_id; });
+                if (it != state.intentions.end()) {
+                    it->subject = event.subject;
+                    it->window_start = event.window_start;
+                    it->window_end = event.window_end;
+                    it->precision = event.precision;
+                    it->allocated_plan_start.reset();
+                    it->allocated_plan_end.reset();
+                    it->last_interaction_at.reset();
+                }
+            } else if constexpr (std::is_same_v<T, EventIntentionDeleted>) {
+                std::erase_if(state.intentions,
+                              [&](const auto& item) { return item.id == event.intention_id; });
             } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
                 max_id = std::max(max_id, event.id);
                 auto it = std::find_if(state.intentions.begin(), state.intentions.end(),

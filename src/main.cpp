@@ -174,6 +174,9 @@ void print_help() {
         << "  lume create-automation <t> <w> <c> <a>  cria nova rotina de automação\n"
         << "  lume toggle-automation <id> <status>    ativa ou pausa uma automação\n"
         << "  lume trigger-automation <id>            dispara uma automação imediatamente\n"
+        << "  lume create-intention <assunto> [i] [f] cria uma intenção\n"
+        << "  lume update-intention <id> <a> <i> <f>  edita uma intenção\n"
+        << "  lume delete-intention <id>               exclui uma intenção da projeção\n"
         << "  lume why                                explica a última interação\n"
         << "  lume doctor                             mostra o provedor linguístico ativo\n"
         << "  lume inspect                            mostra fatos, intenções e proveniência\n"
@@ -347,6 +350,18 @@ int main(int argc, char** argv) {
             const auto start = positional.size() >= 3 ? lume::parse_time(positional[2]).value_or(moment) : moment;
             const auto end = positional.size() >= 4 ? lume::parse_time(positional[3]).value_or(start + std::chrono::hours(2)) : start + std::chrono::hours(2);
             print_outcome(assistant.create_intention(subject, start, end, moment), explain, json);
+        }
+        else if (command == "update-intention" && positional.size() >= 5) {
+            const auto id = std::stoull(positional[1]);
+            const auto subject = positional[2];
+            const auto start = lume::parse_time(positional[3]);
+            const auto end = lume::parse_time(positional[4]);
+            if (!start || !end) throw std::runtime_error("Janela temporal inválida para edição.");
+            print_outcome(assistant.update_intention(id, subject, *start, *end, moment), explain, json);
+        }
+        else if (command == "delete-intention" && positional.size() >= 2) {
+            const auto id = std::stoull(positional[1]);
+            print_outcome(assistant.delete_intention(id, moment), explain, json);
         }
         else if (command == "complete-intention" && positional.size() >= 2) {
             const auto id = std::stoull(positional[1]);
