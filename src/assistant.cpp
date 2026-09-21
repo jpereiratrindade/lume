@@ -216,7 +216,7 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
                     "a expressão contém uma intenção e uma janela temporal parcial", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
         }
 
-        return {"REMEMBERED", "Certo. Guardei isso como contexto. Ainda não transformei em uma intenção.",
+        return {"REMEMBERED", "Certo. Guardei isso como contexto. Ainda não sei quando devo trazer de volta.",
                 "a expressão foi preservada, mas ainda não há estrutura suficiente para o Lume agir", true, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
     });
 }
@@ -331,7 +331,7 @@ Outcome Assistant::apply_plan(std::uint64_t plan_id, TimePoint now) {
                 auto intention_it = std::find_if(state.intentions.begin(), state.intentions.end(),
                                                  [&](const auto& i) { return i.id == block.intention_id; });
                 if (intention_it == state.intentions.end() || intention_it->status != IntentionStatus::open) {
-                    return {"PLAN_STALE", "O contexto das intenções mudou desde a criação do plano. Por favor, gere uma nova proposta.", "intenções foram modificadas ou concluídas", false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
+                    return {"PLAN_STALE", "O contexto mudou desde a criação deste plano. Prepare um novo.", "itens foram modificados ou concluídos", false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
                 }
             }
         }
@@ -372,7 +372,7 @@ Outcome Assistant::apply_plan(std::uint64_t plan_id, TimePoint now) {
         ledger_.append_batch(std::move(batch));
         return {
             .decision = "PLAN_APPLIED",
-            .message = "Proposta de planejamento aplicada. Os compromissos e intenções foram atualizados no ledger.",
+            .message = "Certo. Vou considerar este plano daqui em diante.",
             .reason = "consentimento explícito do usuário para aplicar o plano #" + std::to_string(plan_id),
             .changed = true,
             .type = "text",
@@ -414,7 +414,7 @@ Outcome Assistant::discard_plan(std::uint64_t plan_id, TimePoint now) {
 
         return {
             .decision = "PLAN_DISCARDED",
-            .message = "Proposta descartada. Nenhuma alteração foi realizada nas tuas intenções.",
+            .message = "Plano descartado. O restante continua como estava.",
             .reason = "usuário optou por descartar o plano #" + std::to_string(plan_id),
             .changed = true,
             .type = "text",
@@ -873,7 +873,9 @@ Outcome Assistant::trigger_automation(std::uint64_t automation_id, TimePoint now
             std::size_t open_count = std::count_if(state.intentions.begin(), state.intentions.end(),
                                                   [](const auto& i) { return i.status == IntentionStatus::open; });
             const auto notif_id = next_id++;
-            std::string msg = "Você tem " + std::to_string(open_count) + " intenção(ões) em aberto. Deseja revisá-las ou adiar para amanhã?";
+            std::string msg = open_count == 1
+                ? "Há uma coisa em aberto. Quer revisar agora ou deixar para amanhã?"
+                : "Há " + std::to_string(open_count) + " coisas em aberto. Quer revisar agora ou deixar para amanhã?";
             NotificationRecord notif{
                 .id = notif_id,
                 .automation_id = auto_item.id,
@@ -1080,7 +1082,9 @@ Outcome Assistant::tick(TimePoint now) {
                     std::size_t open_count = std::count_if(state.intentions.begin(), state.intentions.end(),
                                                           [](const auto& i) { return i.status == IntentionStatus::open; });
                     const auto notif_id = next_id++;
-                    std::string msg = "Você tem " + std::to_string(open_count) + " intenção(ões) em aberto. Deseja revisá-las ou adiar para amanhã?";
+                    std::string msg = open_count == 1
+                        ? "Há uma coisa em aberto. Quer revisar agora ou deixar para amanhã?"
+                        : "Há " + std::to_string(open_count) + " coisas em aberto. Quer revisar agora ou deixar para amanhã?";
                     NotificationRecord notif{
                         .id = notif_id,
                         .automation_id = auto_item.id,
@@ -1182,10 +1186,10 @@ Outcome Assistant::observe(TimePoint now) {
         }
 
         const auto reason = "você disse que queria " + candidate->subject +
-                            "; a janela declarada está ativa e a intenção continua aberta";
+                            "; o período combinado começou e isso continua em aberto";
         auto formulation = language_->formulate({"SUGGEST", candidate->subject, reason});
         if (formulation.text.empty()) {
-            formulation.text = "Você deixou uma intenção aberta para este período: " + candidate->subject + ".";
+            formulation.text = "Você queria voltar a isto neste período: " + candidate->subject + ".";
             formulation.source = "core-fallback";
         }
 

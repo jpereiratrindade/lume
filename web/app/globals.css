@@ -273,6 +273,22 @@ body {
   color: var(--ink-muted);
 }
 
+.attention-reason {
+  margin-top: 0.7rem;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.attention-reason summary,
+.context-details summary,
+.more-capabilities summary {
+  cursor: pointer;
+}
+
+.attention-reason p {
+  margin-top: 0.4rem;
+}
+
 /* Conversation Thread */
 .conversation-thread {
   width: 100%;
@@ -444,6 +460,121 @@ body {
   border-radius: var(--radius-lg);
   padding: 1.5rem;
   box-shadow: var(--shadow-sm);
+}
+
+/* Secondary review surface: deliberately quieter than the moment of presence. */
+.care-container {
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  animation: rise 0.35s ease both;
+}
+
+.care-header {
+  margin-bottom: 2rem;
+}
+
+.care-header h2 {
+  margin-bottom: 0.45rem;
+  font-size: clamp(1.8rem, 4vw, 2.5rem);
+  letter-spacing: -0.035em;
+}
+
+.care-header p,
+.care-window {
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+}
+
+.care-list-section {
+  margin-bottom: 1.5rem;
+}
+
+.care-container .intention-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.care-container .intention-main > strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.item-menu {
+  position: relative;
+}
+
+.item-menu > summary {
+  padding: 0.25rem 0.45rem;
+  color: var(--ink-muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.item-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.item-menu > div {
+  position: absolute;
+  right: 0;
+  top: 1.8rem;
+  z-index: 5;
+  width: 13rem;
+  padding: 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+
+.item-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.item-menu button:hover {
+  background: var(--bg-subtle);
+}
+
+.item-menu p {
+  margin: 0.4rem 0.5rem 0;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.more-capabilities {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.more-capabilities nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+}
+
+.more-capabilities button {
+  padding: 0.45rem 0.8rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  color: var(--ink-secondary);
+  cursor: pointer;
 }
 
 .intentions-section-header {
@@ -1622,5 +1753,18 @@ body {
   }
   .hero-greeting {
     font-size: 2.2rem;
+  }
+  .presence-pill {
+    display: none;
+  }
+  .intention-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .intention-card-actions {
+    width: 100%;
+  }
+  .item-menu {
+    margin-left: auto;
   }
 }

@@ -67,10 +67,11 @@
 
 ---
 
-## 3. Experiência Humana em Três Profundidades
-1. **Presença (Agora)**: Foco presente, diálogo e atenção factual serena.
-2. **Orquestração (Planejar)**: Projeção de blocos estruturados e consentimento explícito (*"Usar este plano"*).
-3. **Exploração (Automatizar, Conectar, Analisar)**: Gestão de rotinas com autoridade, conexões factuais verificadas e evidências analíticas.
+## 3. Experiência Humana em Duas Superfícies
+1. **Agora**: silêncio legível, presença pertinente ou intervenção justificada; diálogo como entrada principal.
+2. **Sob cuidado**: revisão e correção sob demanda. Orquestração e exploração permanecem recolhidas até serem pedidas.
+
+Os estados de atenção (`silêncio → presença → intervenção`) são independentes das capacidades (`presença → orquestração → exploração`). A arquitetura pode ganhar complexidade sem transferi-la para a superfície primária.
 
 ---
 

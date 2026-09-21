@@ -21,8 +21,11 @@ test("server-renders the Lume presence surface", async () => {
   assert.match(html, /<p class="eyebrow">Hoje<\/p>/);
   assert.match(html, /<h1 id="greeting">Olá\.<\/h1>/);
   assert.match(html, /O que está acontecendo agora\?/);
+  assert.match(html, /Por enquanto, nada pede tua atenção/);
   assert.match(html, /Pode falar do teu jeito/);
   assert.match(html, /Seu contexto fica com você/);
+  assert.match(html, /Sob cuidado/);
+  assert.doesNotMatch(html, /Intenções Declaradas no Ledger|Nova Intenção|Organizar minha semana/);
   assert.match(html, /https:\/\/lume\.example\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|Starter Project/);
 });

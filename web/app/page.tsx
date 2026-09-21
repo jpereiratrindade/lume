@@ -4,7 +4,7 @@ import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useS
 
 type Role = "person" | "lume";
 type Connection = "checking" | "local" | "preview";
-type ViewMode = "presence" | "plan" | "automate" | "connect" | "analyze";
+type ViewMode = "presence" | "care" | "plan" | "automate" | "connect" | "analyze";
 
 type PlanBlock = {
   title: string;
@@ -176,6 +176,13 @@ function toDateTimeLocal(value: string) {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+function humanAuthority(value: string) {
+  if (value === "suggest_only") return "Pode apenas sugerir";
+  if (value === "prepare_proposal") return "Pode preparar, mas espera tua confirmação";
+  if (value === "execute") return "Pode executar como autorizado";
+  return value;
+}
+
 export default function Home() {
   const [connection, setConnection] = useState<Connection>("checking");
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
@@ -192,7 +199,6 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [intentionFilter, setIntentionFilter] = useState<"open" | "completed" | "all">("open");
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
   const [editingIntentionId, setEditingIntentionId] = useState<number | null>(null);
   const [newSubject, setNewSubject] = useState("");
@@ -206,12 +212,6 @@ export default function Home() {
     () => intentions.filter((item) => item.status === "open" || item.status === "active"),
     [intentions],
   );
-
-  const filteredIntentions = useMemo(() => {
-    if (intentionFilter === "open") return intentions.filter((i) => i.status === "open" || i.status === "active");
-    if (intentionFilter === "completed") return intentions.filter((i) => i.status === "completed");
-    return intentions;
-  }, [intentions, intentionFilter]);
 
   const refreshContext = useCallback(async () => {
     try {
@@ -381,7 +381,7 @@ export default function Home() {
         if (activePlan && activePlan.id === planId) {
           setActivePlan({ ...activePlan, status: "applied" });
         }
-        setStatusMessage("Plano aplicado com sucesso no Ledger imutável.");
+        setStatusMessage("Plano guardado.");
         append("lume", result.message, result.reason);
         await refreshContext();
       } else {
@@ -389,7 +389,7 @@ export default function Home() {
           setActivePlan({ ...activePlan, status: "applied" });
         }
         setStatusMessage("Plano aplicado localmente.");
-        append("lume", "Proposta de planejamento aplicada.", "Consentimento registrado.");
+        append("lume", "Certo. Vou considerar este plano daqui em diante.", "Você confirmou o plano.");
       }
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Erro ao aplicar.");
@@ -500,62 +500,12 @@ export default function Home() {
     setNewEnd("");
   }
 
-  function openNewIntentionModal() {
-    setEditingIntentionId(null);
-    setNewSubject("");
-    setNewStart("");
-    setNewEnd("");
-    setIsNewModalOpen(true);
-  }
-
   function openEditIntentionModal(intention: Intention) {
     setEditingIntentionId(intention.id);
     setNewSubject(intention.subject);
     setNewStart(toDateTimeLocal(intention.window_start));
     setNewEnd(toDateTimeLocal(intention.window_end));
     setIsNewModalOpen(true);
-  }
-
-  async function handleCreateIntentionDirect(subject: string, start?: string, end?: string) {
-    if (!subject.trim()) return;
-    setProcessing(true);
-    try {
-      if (connection === "local") {
-        const response = await fetch(`${bridge}/api/intentions/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subject: subject.trim(), start, end }),
-        });
-        if (!response.ok) throw new Error("Erro ao criar intenção.");
-        const outcome = (await response.json()) as LumeOutcome;
-        append("lume", outcome.message, outcome.reason);
-        await refreshContext();
-      } else {
-        const nowTime = now ?? new Date();
-        const startIso = start || nowTime.toISOString();
-        const endIso = end || new Date(nowTime.getTime() + 2 * 3600 * 1000).toISOString();
-        setIntentions((prev) => [
-          ...prev,
-          {
-            id: Date.now(),
-            subject: subject.trim(),
-            window_start: startIso,
-            window_end: endIso,
-            precision: "direct",
-            authority: "user",
-            interpretation_source: "user_direct",
-            status: "open",
-            last_interaction_at: null,
-          },
-        ]);
-        append("lume", `Intenção "${subject}" registrada no modo prévia.`);
-      }
-    } catch (err) {
-      append("lume", "Falha ao criar intenção.", err instanceof Error ? err.message : "Erro");
-    } finally {
-      setProcessing(false);
-      closeIntentionModal();
-    }
   }
 
   async function handleEditIntention(id: number, subject: string, start: string, end: string) {
@@ -758,7 +708,7 @@ export default function Home() {
       append(
         "lume",
         "Certo. Amanhã de manhã eu trago isso de volta.",
-        "Você expressou uma intenção para amanhã de manhã. O contexto foi gravado.",
+        "Você pediu para trazer isso de volta amanhã de manhã.",
       );
       const tomorrow = new Date(now ?? new Date());
       tomorrow.setDate(tomorrow.getDate() + 1);
@@ -794,7 +744,7 @@ export default function Home() {
     }
     append(
       "lume",
-      "Certo. Guardei isso como contexto. Ainda não transformei em uma intenção.",
+      "Certo. Guardei isso como contexto. Ainda não sei quando devo trazer de volta.",
       "A expressão foi preservada, mas ainda não há estrutura suficiente para o Lume agir.",
     );
   }
@@ -863,32 +813,11 @@ export default function Home() {
               Agora
             </button>
             <button
-              className={`depth-link ${viewMode === "plan" ? "is-active" : ""}`}
+              className={`depth-link ${viewMode !== "presence" ? "is-active" : ""}`}
               type="button"
-              onClick={() => setViewMode("plan")}
+              onClick={() => setViewMode("care")}
             >
-              Planejar
-            </button>
-            <button
-              className={`depth-link ${viewMode === "automate" ? "is-active" : ""}`}
-              type="button"
-              onClick={() => setViewMode("automate")}
-            >
-              Automatizar
-            </button>
-            <button
-              className={`depth-link ${viewMode === "connect" ? "is-active" : ""}`}
-              type="button"
-              onClick={() => setViewMode("connect")}
-            >
-              Conectar
-            </button>
-            <button
-              className={`depth-link ${viewMode === "analyze" ? "is-active" : ""}`}
-              type="button"
-              onClick={() => setViewMode("analyze")}
-            >
-              Analisar
+              Sob cuidado
             </button>
           </nav>
         </div>
@@ -906,18 +835,19 @@ export default function Home() {
 
               {attentionCandidate && attentionCandidate.is_active_now ? (
                 <div className="presence-insight">
-                  <p className="insight-lead">Há uma coisa que merece tua atenção agora:</p>
+                  <p className="insight-lead">Você queria voltar a isto agora:</p>
                   <p className="insight-highlight">
                     <strong>{attentionCandidate.subject}</strong> — {shortWindow(attentionCandidate.window_start)}
                   </p>
                   {attentionCandidate.relevance_reason && (
-                    <p className="insight-reason" style={{ fontSize: "0.85rem", opacity: 0.8, marginTop: "0.35rem" }}>
-                      {attentionCandidate.relevance_reason}
-                    </p>
+                    <details className="attention-reason">
+                      <summary>Por que agora?</summary>
+                      <p>{attentionCandidate.relevance_reason}</p>
+                    </details>
                   )}
                 </div>
               ) : (
-                <p className="presence-calm">Está tudo tranquilo por enquanto. Nenhuma intenção declarada requer atenção imediata.</p>
+                <p className="presence-calm">Por enquanto, nada pede tua atenção.</p>
               )}
             </div>
 
@@ -961,142 +891,67 @@ export default function Home() {
                 onSend={send}
                 inputRef={composer}
               />
+            </div>
+          </section>
+        )}
 
-              <div className="presence-actions">
-                <button type="button" className="action-tag" onClick={() => void triggerPlan("morning")}>
-                  ✦ Organizar minha manhã
-                </button>
-                <button type="button" className="action-tag" onClick={() => void triggerPlan("week")}>
-                  ✦ Organizar minha semana
-                </button>
-                <button type="button" className="action-tag" onClick={() => setViewMode("analyze")}>
-                  ✦ Ver padrões observados
-                </button>
-              </div>
+        {/* SEGUNDA PROFUNDIDADE: REVISÃO E CAPACIDADES SOB DEMANDA */}
+        {viewMode === "care" && (
+          <section className="care-container">
+            <div className="care-header">
+              <span className="section-kicker">Sob cuidado</span>
+              <h2>O que você não queria perder de vista</h2>
+              <p>Você pode corrigir algo aqui. Para guardar algo novo, basta dizer ao Lume.</p>
             </div>
 
-            {/* Intenções Declaradas sob Custódia Local */}
-            <div className="presence-intentions-section">
-              <div className="intentions-section-header">
-                <div>
-                  <span className="section-kicker" style={{ fontSize: "0.68rem", marginBottom: "0.15rem" }}>Intenções</span>
-                  <h3>Intenções Declaradas no Ledger ({filteredIntentions.length})</h3>
-                </div>
-                <div style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
-                  <div style={{ display: "flex", gap: "0.2rem", background: "var(--bg-subtle)", padding: "0.15rem", borderRadius: "var(--radius-full)" }}>
-                    <button
-                      type="button"
-                      className={`filter-tab-btn ${intentionFilter === "open" ? "is-active" : ""}`}
-                      onClick={() => setIntentionFilter("open")}
-                    >
-                      Abertas
-                    </button>
-                    <button
-                      type="button"
-                      className={`filter-tab-btn ${intentionFilter === "completed" ? "is-active" : ""}`}
-                      onClick={() => setIntentionFilter("completed")}
-                    >
-                      Concluídas
-                    </button>
-                    <button
-                      type="button"
-                      className={`filter-tab-btn ${intentionFilter === "all" ? "is-active" : ""}`}
-                      onClick={() => setIntentionFilter("all")}
-                    >
-                      Todas
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-new-intention"
-                    onClick={openNewIntentionModal}
-                  >
-                    + Nova Intenção
-                  </button>
-                </div>
-              </div>
-
-              {filteredIntentions.length > 0 ? (
+            <div className="care-list-section">
+              {openIntentions.length > 0 ? (
                 <div className="intentions-list">
-                  {filteredIntentions.map((item) => {
-                    const isDeterministic = item.interpretation_source.includes("deterministic") || item.interpretation_source.includes("fallback");
-                    return (
-                      <article key={item.id} className={`intention-card ${item.status}`}>
-                        <div className="intention-main" style={{ flex: 1 }}>
-                          <div className="intention-title-row">
-                            <span className={`status-pill ${item.status}`}>
-                              {item.status === "open" ? "Aberta" : item.status === "active" ? "Foco Atual" : item.status === "completed" ? "Concluída" : "Descartada"}
-                            </span>
-                            <strong>{item.subject}</strong>
-                          </div>
-                          <div className="intention-meta">
-                            <span>Janela: {shortWindow(item.window_start)} até {shortWindow(item.window_end)}</span>
-                            <span className="meta-sep">·</span>
-                            <span>Autoridade: {item.authority === "user" ? "usuário" : item.authority}</span>
-                            <span className="meta-sep">·</span>
-                            <span className="source-tag" title={item.interpretation_source}>
-                              {isDeterministic ? "✦ Interpretação local" : item.interpretation_source}
-                            </span>
-                          </div>
-                        </div>
+                  {openIntentions.map((item) => (
+                    <article key={item.id} className={`intention-card ${item.status}`}>
+                      <div className="intention-main">
+                        <strong>{item.subject}</strong>
+                        <p className="care-window">{shortWindow(item.window_start)}</p>
+                      </div>
 
-                        <div className="intention-card-actions">
-                          {item.status !== "dismissed" && (
+                      <div className="intention-card-actions">
+                        <button type="button" className="btn-action-complete" disabled={processing} onClick={() => handleUpdateIntentionStatus(item.id, "completed")}>Resolvido</button>
+                        <button type="button" className="btn-action-defer" disabled={processing} onClick={() => handleDeferIntention(item.id, 24)}>Amanhã</button>
+                        <details className="item-menu">
+                          <summary aria-label={`Mais opções para ${item.subject}`}>•••</summary>
+                          <div>
+                            <button type="button" onClick={() => openEditIntentionModal(item)}>Ajustar</button>
                             <button
                               type="button"
-                              className="btn-action-defer"
-                              disabled={processing}
-                              onClick={() => openEditIntentionModal(item)}
+                              onClick={() => {
+                                if (window.confirm(`Deixar de guardar “${item.subject}”?`)) void handleDeleteIntention(item.id);
+                              }}
                             >
-                              ✎ Editar
+                              Deixar de guardar
                             </button>
-                          )}
-                          {item.status !== "completed" && item.status !== "dismissed" && (
-                            <button
-                              type="button"
-                              className="btn-action-complete"
-                              disabled={processing}
-                              onClick={() => handleUpdateIntentionStatus(item.id, "completed")}
-                              title="Marcar como concluída"
-                            >
-                              ✓ Concluir
-                            </button>
-                          )}
-                          {item.status !== "completed" && item.status !== "dismissed" && (
-                            <button
-                              type="button"
-                              className="btn-action-defer"
-                              disabled={processing}
-                              onClick={() => handleDeferIntention(item.id, 24)}
-                              title="Adiar para amanhã"
-                            >
-                              ⏰ Amanhã
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="btn-action-dismiss"
-                            disabled={processing}
-                            onClick={() => {
-                              if (window.confirm(`Excluir a intenção “${item.subject}”?`)) {
-                                void handleDeleteIntention(item.id);
-                              }
-                            }}
-                            title="Excluir intenção"
-                          >
-                            Excluir
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
+                            <p>Interpretado localmente a partir do que você disse.</p>
+                          </div>
+                        </details>
+                      </div>
+                    </article>
+                  ))}
                 </div>
               ) : (
                 <div className="empty-intentions-card">
-                  <p>Nenhuma intenção encontrada para este filtro. Use o formulário acima ou clique em “+ Nova Intenção”.</p>
+                  <p>Nada em aberto.</p>
                 </div>
               )}
             </div>
+
+            <details className="more-capabilities">
+              <summary>Fazer mais com este contexto</summary>
+              <nav aria-label="Outras formas de cuidar do contexto">
+                <button type="button" onClick={() => setViewMode("plan")}>Organizar</button>
+                <button type="button" onClick={() => setViewMode("automate")}>Rotinas</button>
+                <button type="button" onClick={() => setViewMode("connect")}>Conexões</button>
+                <button type="button" onClick={() => setViewMode("analyze")}>Padrões</button>
+              </nav>
+            </details>
           </section>
         )}
 
@@ -1105,8 +960,8 @@ export default function Home() {
           <section className="orchestration-container">
             <div className="orchestration-header">
               <div>
-                <span className="section-kicker">Orquestração Adaptativa</span>
-                <h2>{activePlan?.summary ?? "Projeção de Planejamento"}</h2>
+                <span className="section-kicker">Organizar</span>
+                <h2>{activePlan?.summary ?? "Preparar um plano"}</h2>
               </div>
               <div className="orchestration-horizon-toggle">
                 <button
@@ -1188,11 +1043,11 @@ export default function Home() {
                     </>
                   ) : activePlan.status === "applied" ? (
                     <div className="applied-pill">
-                      <span>✓ Proposta aceita e gravada no Ledger local</span>
+                      <span>✓ Plano guardado</span>
                     </div>
                   ) : (
                     <div className="discarded-pill">
-                      <span>○ Proposta descartada sem efeitos colaterais</span>
+                      <span>○ Plano descartado</span>
                     </div>
                   )}
                 </div>
@@ -1202,7 +1057,7 @@ export default function Home() {
                 {openIntentions.length > 0 ? (
                   <div style={{ marginBottom: "1.5rem", textAlign: "left", width: "100%", maxWidth: "560px", background: "var(--bg-subtle)", padding: "1.2rem", borderRadius: "8px", border: "1px solid var(--border-subtle)" }}>
                     <strong style={{ display: "block", marginBottom: "0.6rem", color: "var(--ink-primary)" }}>
-                      {openIntentions.length} intenção(ões) aberta(s) aguardando alocação na agenda:
+                      {openIntentions.length === 1 ? "Uma coisa pode ser organizada:" : `${openIntentions.length} coisas podem ser organizadas:`}
                     </strong>
                     <ul style={{ paddingLeft: "1.2rem", margin: 0, fontSize: "0.9rem", color: "var(--ink-secondary)" }}>
                       {openIntentions.map((i) => (
@@ -1216,7 +1071,7 @@ export default function Home() {
                   <p>Nenhum plano ativo. Clique em “Organizar minha semana” ou peça uma reorganização.</p>
                 )}
                 <button type="button" className="btn-primary" onClick={() => void triggerPlan("week")}>
-                  ✦ Gerar proposta de planejamento com estas intenções
+                  Preparar um plano
                 </button>
               </div>
             )}
@@ -1228,7 +1083,7 @@ export default function Home() {
           <section className="exploration-container">
             <div className="exploration-header">
               <span className="section-kicker">Capacidade</span>
-              <h2>Automatizar com Autoridade Concedida</h2>
+              <h2>Rotinas</h2>
               <p>Comportamentos que o Lume executa com permissão explícita, sem surpresas nem ações invisíveis.</p>
             </div>
 
@@ -1285,8 +1140,8 @@ export default function Home() {
                         <span className="spec-value">{item.action_then}</span>
                       </div>
                       <div className="spec-item">
-                        <span className="spec-label">Autoridade:</span>
-                        <span className="spec-value">{item.authority}</span>
+                        <span className="spec-label">Permissão:</span>
+                        <span className="spec-value">{humanAuthority(item.authority)}</span>
                       </div>
                     </div>
                     <div className="auto-footer">
@@ -1566,12 +1421,12 @@ export default function Home() {
         </div>
       </footer>
 
-      {/* Modal de criação e edição de intenção */}
+      {/* Ajuste explícito de algo mantido em contexto */}
       {isNewModalOpen && (
         <div className="lume-modal-overlay">
           <div className="lume-modal-card" role="dialog" aria-modal="true" aria-labelledby="intention-modal-title">
             <div className="lume-modal-header">
-              <h3 id="intention-modal-title">{editingIntentionId === null ? "Nova Intenção" : "Editar Intenção"}</h3>
+              <h3 id="intention-modal-title">Ajustar contexto</h3>
               <button
                 type="button"
                 className="btn-action-dismiss"
@@ -1584,15 +1439,13 @@ export default function Home() {
               className="modal-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (editingIntentionId === null) {
-                  void handleCreateIntentionDirect(newSubject, newStart || undefined, newEnd || undefined);
-                } else {
+                if (editingIntentionId !== null) {
                   void handleEditIntention(editingIntentionId, newSubject, newStart, newEnd);
                 }
               }}
             >
               <div className="form-field">
-                <label htmlFor="modal-subject">Assunto ou objetivo:</label>
+                <label htmlFor="modal-subject">O que você quer lembrar?</label>
                 <input
                   id="modal-subject"
                   type="text"
@@ -1603,7 +1456,7 @@ export default function Home() {
                 />
               </div>
               <div className="form-field">
-                <label htmlFor="modal-start">Início da janela temporal{editingIntentionId === null ? " (opcional)" : ""}:</label>
+                <label htmlFor="modal-start">A partir de</label>
                 <input
                   id="modal-start"
                   type="datetime-local"
@@ -1612,7 +1465,7 @@ export default function Home() {
                 />
               </div>
               <div className="form-field">
-                <label htmlFor="modal-end">Término da janela temporal{editingIntentionId === null ? " (opcional)" : ""}:</label>
+                <label htmlFor="modal-end">Até</label>
                 <input
                   id="modal-end"
                   type="datetime-local"
@@ -1634,10 +1487,11 @@ export default function Home() {
                   disabled={
                     !newSubject.trim() ||
                     processing ||
-                    (editingIntentionId !== null && (!newStart || !newEnd))
+                    !newStart ||
+                    !newEnd
                   }
                 >
-                  {editingIntentionId === null ? "Criar intenção" : "Salvar alterações"}
+                  Salvar
                 </button>
               </div>
             </form>

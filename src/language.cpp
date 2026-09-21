@@ -122,14 +122,14 @@ PlanProposalCandidate DeterministicLanguage::propose_plan(const PlanRequest& req
     TimePoint base_slot{std::chrono::seconds{std::mktime(&local)}};
 
     if (request.open_intentions.empty()) {
-        candidate.summary = "Não há intenções abertas registradas para organizar.";
-        candidate.points_of_attention.push_back("O teu horizonte está livre de intenções pendentes.");
+        candidate.summary = "Não há nada em aberto para organizar.";
+        candidate.points_of_attention.push_back("O teu horizonte está livre por enquanto.");
         return candidate;
     }
 
     const auto count = request.open_intentions.size();
     candidate.summary = "Tenho informação para organizar " + std::to_string(count) +
-                        (count == 1 ? " intenção real. " : " intenções reais. ") +
+                        (count == 1 ? " coisa. " : " coisas. ") +
                         "O restante do horizonte permanece livre.";
 
     auto current_slot = base_slot;
@@ -149,9 +149,9 @@ PlanProposalCandidate DeterministicLanguage::propose_plan(const PlanRequest& req
     }
 
     if (count == 1) {
-        candidate.points_of_attention.push_back("Uma única intenção prioritária alocada em bloco protegido de 2h.");
+        candidate.points_of_attention.push_back("Uma coisa foi colocada em um bloco protegido de 2h.");
     } else {
-        candidate.points_of_attention.push_back("Intenções distribuídas com intervalo de respiro entre blocos.");
+        candidate.points_of_attention.push_back("Os blocos têm um intervalo de respiro entre si.");
     }
 
     return candidate;
@@ -165,7 +165,7 @@ FormulationResult DeterministicLanguage::formulate(const FormulationRequest& req
         return {"Certo. Amanhã de manhã eu trago isso de volta.", name()};
     }
     if (request.decision == "PLAN_PROPOSED") {
-        return {"Preparei uma proposta de planejamento. Você pode ajustar ou aplicar diretamente.", name()};
+        return {"Preparei um plano. Você pode ajustar ou usar como está.", name()};
     }
     return {{}, name()};
 }
