@@ -170,7 +170,7 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState<number | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const composer = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
 
   const openIntentions = useMemo(
@@ -1200,15 +1200,15 @@ function Composer({
 }: {
   processing: boolean;
   onSend: (text: string) => Promise<void>;
-  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
-  const localRef = useRef<HTMLTextAreaElement | null>(null);
-  const textarea = inputRef ?? localRef;
+  const localRef = useRef<HTMLInputElement | null>(null);
+  const inputEl = inputRef ?? localRef;
 
   const handleSubmit = (event?: FormEvent) => {
     event?.preventDefault();
     if (processing) return;
-    const el = textarea.current;
+    const el = inputEl.current;
     if (!el) return;
     const trimmed = el.value.trim();
     if (!trimmed) return;
@@ -1216,7 +1216,7 @@ function Composer({
     void onSend(trimmed);
   };
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSubmit();
@@ -1228,10 +1228,10 @@ function Composer({
       <label className="sr-only" htmlFor="calm-thought">
         Diga o que mudou ou peça um plano
       </label>
-      <textarea
-        ref={textarea}
+      <input
+        ref={inputEl}
+        type="text"
         id="calm-thought"
-        rows={1}
         defaultValue=""
         onKeyDown={handleKeyDown}
         placeholder="Pode falar do teu jeito, pedir um plano ou guardar um contexto…"
