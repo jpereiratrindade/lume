@@ -30,7 +30,7 @@ a ponte e a política de origem serão ajustadas juntas:
 LUME_WEB_PORT=3100 LUME_BRIDGE_PORT=4242 npm run dev:local
 ```
 
-## Prévia independente
+## Prévia local independente
 
 ```bash
 npm run dev
@@ -39,6 +39,9 @@ npm run dev
 Sem a ponte, a interface entra em modo de prévia. Esse modo demonstra a
 experiência, mas não persiste estado canônico nem se apresenta como o runtime
 real.
+
+As duas formas de execução são exclusivamente locais. O projeto não depende de
+um serviço hospedado e não envia o contexto pessoal para fora da máquina.
 
 ## Validação
 
@@ -50,4 +53,4 @@ npm run test:local
 O segundo comando requer `../build/lume` e valida a comunicação real entre a
 interface e o runtime.
 
-O site é construído com vinext e mantém saída compatível com Cloudflare Workers.
+A interface é construída com vinext apenas para execução e validação local.

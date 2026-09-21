@@ -47,8 +47,8 @@ npm run dev:local
 ```
 
 Abra `http://localhost:3000`. A interface conversa com o mesmo core e estado da
-CLI por uma ponte exclusivamente local. `npm run dev` inicia apenas a prévia de
-experiência, sem estado canônico.
+CLI por uma ponte exclusivamente local. Nenhum contexto é enviado a um serviço
+hospedado. `npm run dev` inicia apenas uma prévia local, sem estado canônico.
 
 Para validar também o contrato entre a interface e o runtime:
 
