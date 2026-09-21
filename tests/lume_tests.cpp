@@ -299,14 +299,34 @@ void malformed_ledger_reject_test(const std::filesystem::path& path) {
     out << "1\t2026-09-21T18:00:00Z\tUNKNOWN_EVENT_TYPE\tuser\n"; // Unknown event type
     out.close();
 
-    lume::Ledger ledger{path};
     bool caught = false;
     try {
+        lume::Ledger ledger{path};
         static_cast<void>(ledger.read_all());
     } catch (const std::exception&) {
         caught = true;
     }
     expect(caught, "malformed event type must be strictly rejected");
+}
+
+void sqlite_wal_persistence_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    ledger.append(lume::EventRecord{
+        .recorded_at = at("2026-09-21T18:00:00"),
+        .authority = "user",
+        .epistemic_class = lume::EpistemicClass::user_declared,
+        .payload = lume::EventExpressionRecorded{1, at("2026-09-21T18:00:00"), "teste sqlite wal"},
+    });
+
+    // Verify it is a valid SQLite 3 database
+    std::ifstream in(path, std::ios::binary);
+    char header[16];
+    in.read(header, 16);
+    expect(std::string_view(header, 16).starts_with("SQLite format 3"), "ledger must be created as SQLite format 3");
+
+    const auto records = ledger.read_all();
+    expect(records.size() == 1, "must retrieve 1 record from SQLite database");
+    expect(records.front().sequence_number == 1, "first sequence number must be 1");
 }
 
 void epistemic_class_test(const std::filesystem::path& path) {
@@ -429,6 +449,7 @@ int main() {
         unspecified_deferral_test(base / "unspecified-deferral.state");
         ledger_immutability_and_replay_test(base / "ledger-replay.state");
         legacy_migration_test(base / "legacy.state");
+        sqlite_wal_persistence_test(base / "sqlite-wal.state");
         monotonic_sequence_test(base / "sequence.state");
         orchestration_plan_lifecycle_test(base / "orchestration.state");
         plan_stale_detection_test(base / "stale-plan.state");

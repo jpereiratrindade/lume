@@ -1,28 +1,47 @@
 #include "lume/ledger.hpp"
 
+#include <nlohmann/json.hpp>
+#include <sqlite3.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
-#include <charconv>
-#include <fcntl.h>
-#include <fstream>
+#include <chrono>
 #include <condition_variable>
-#include <iomanip>
+#include <fstream>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
-#include <string_view>
-#include <sys/file.h>
-#include <sys/stat.h>
+#include <string>
 #include <thread>
-#include <unistd.h>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace lume {
 namespace {
 
+using Json = nlohmann::json;
+
+// --- POSIX Permissions Enforcement ---
+void ensure_secure_permissions(const std::filesystem::path& path) {
+    if (path.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        chmod(path.parent_path().c_str(), S_IRWXU); // 0700
+    }
+    if (std::filesystem::exists(path)) {
+        chmod(path.c_str(), S_IRUSR | S_IWUSR); // 0600
+    }
+}
+
+// --- Thread-Safe Reentrant Process/File Lock ---
 struct LockInfo {
     int fd{-1};
-    std::thread::id owner_thread{};
-    int recursion_count{0};
+    int count{0};
+    std::thread::id owner{};
     int waiters{0};
 };
 
@@ -30,190 +49,593 @@ std::mutex g_lock_mutex;
 std::condition_variable g_lock_cv;
 std::unordered_map<std::string, LockInfo> g_locks;
 
-void secure_directory(const std::filesystem::path& dir) {
-    if (dir.empty()) return;
-    std::filesystem::create_directories(dir);
-    chmod(dir.c_str(), S_IRWXU); // 0700
-}
+int acquire_reentrant_lock(const std::string& path) {
+    if (path.empty()) return -1;
+    const auto current_thread = std::this_thread::get_id();
+    std::unique_lock<std::mutex> lk(g_lock_mutex);
 
-std::string hex_encode(std::string_view input) {
-    constexpr char digits[] = "0123456789abcdef";
-    std::string output;
-    output.reserve(input.size() * 2);
-    for (const char character : input) {
-        const auto byte = static_cast<unsigned char>(character);
-        output.push_back(digits[byte >> 4]);
-        output.push_back(digits[byte & 0x0f]);
-    }
-    return output;
-}
-
-int hex_value(char character) {
-    if (character >= '0' && character <= '9') return character - '0';
-    if (character >= 'a' && character <= 'f') return character - 'a' + 10;
-    if (character >= 'A' && character <= 'F') return character - 'A' + 10;
-    throw std::runtime_error("invalid hexadecimal data in ledger file");
-}
-
-std::string hex_decode(std::string_view input) {
-    if (input.size() % 2 != 0) throw std::runtime_error("truncated data in ledger file");
-    std::string output;
-    output.reserve(input.size() / 2);
-    for (std::size_t index = 0; index < input.size(); index += 2) {
-        output.push_back(static_cast<char>((hex_value(input[index]) << 4) |
-                                           hex_value(input[index + 1])));
-    }
-    return output;
-}
-
-std::vector<std::string> split_tabs(const std::string& line) {
-    std::vector<std::string> fields;
-    std::size_t begin = 0;
     while (true) {
-        const auto end = line.find('\t', begin);
-        fields.push_back(line.substr(begin, end - begin));
-        if (end == std::string::npos) break;
-        begin = end + 1;
+        auto& info = g_locks[path];
+        if (info.count == 0) {
+            info.owner = current_thread;
+            info.count = 1;
+
+            if (info.fd < 0) {
+                ensure_secure_permissions(path);
+                info.fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
+                if (info.fd < 0) {
+                    g_locks.erase(path);
+                    throw std::runtime_error("Não foi possível criar o arquivo de lock: " + path);
+                }
+                chmod(path.c_str(), S_IRUSR | S_IWUSR);
+            }
+
+            lk.unlock();
+            struct flock fl{};
+            fl.l_type = F_WRLCK;
+            fl.l_whence = SEEK_SET;
+            fl.l_start = 0;
+            fl.l_len = 0;
+            while (fcntl(info.fd, F_SETLKW, &fl) < 0) {
+                if (errno == EINTR) continue;
+                lk.lock();
+                info.count = 0;
+                info.owner = {};
+                g_lock_cv.notify_all();
+                throw std::runtime_error("Falha ao adquirir trava exclusiva do processo: " + path);
+            }
+            return info.fd;
+        }
+
+        if (info.owner == current_thread) {
+            info.count++;
+            return info.fd;
+        }
+
+        info.waiters++;
+        g_lock_cv.wait(lk, [&]() {
+            auto it = g_locks.find(path);
+            return it == g_locks.end() || it->second.count == 0;
+        });
+        auto& updated = g_locks[path];
+        updated.waiters--;
+    }
+}
+
+void release_reentrant_lock(const std::string& path) {
+    if (path.empty()) return;
+    const auto current_thread = std::this_thread::get_id();
+    std::unique_lock<std::mutex> lk(g_lock_mutex);
+
+    auto it = g_locks.find(path);
+    if (it == g_locks.end() || it->second.owner != current_thread || it->second.count <= 0) {
+        return;
+    }
+
+    it->second.count--;
+    if (it->second.count == 0) {
+        struct flock fl{};
+        fl.l_type = F_UNLCK;
+        fl.l_whence = SEEK_SET;
+        fl.l_start = 0;
+        fl.l_len = 0;
+        fcntl(it->second.fd, F_SETLK, &fl);
+        it->second.owner = {};
+
+        if (it->second.waiters == 0) {
+            close(it->second.fd);
+            g_locks.erase(it);
+        }
+        lk.unlock();
+        g_lock_cv.notify_one();
+    }
+}
+
+// --- SQLite Database RAII Wrapper ---
+class SqliteDb {
+public:
+    explicit SqliteDb(const std::filesystem::path& path) {
+        ensure_secure_permissions(path);
+        int rc = sqlite3_open_v2(path.c_str(), &db_,
+                                 SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                                 nullptr);
+        if (rc != SQLITE_OK) {
+            std::string err = db_ ? sqlite3_errmsg(db_) : "unknown error";
+            if (db_) sqlite3_close(db_);
+            throw std::runtime_error("Falha ao abrir banco SQLite: " + err);
+        }
+        ensure_secure_permissions(path);
+        init_schema();
+    }
+
+    ~SqliteDb() {
+        if (db_) sqlite3_close(db_);
+    }
+
+    SqliteDb(const SqliteDb&) = delete;
+    SqliteDb& operator=(const SqliteDb&) = delete;
+
+    sqlite3* get() const noexcept { return db_; }
+
+    void exec(const std::string& sql) {
+        char* err_msg = nullptr;
+        int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
+        if (rc != SQLITE_OK) {
+            std::string err = err_msg ? err_msg : "unknown error";
+            sqlite3_free(err_msg);
+            throw std::runtime_error("Erro de execução SQLite (" + sql + "): " + err);
+        }
+    }
+
+private:
+    void init_schema() {
+        // WAL mode & performance pragmas
+        exec("PRAGMA journal_mode = WAL;");
+        exec("PRAGMA synchronous = NORMAL;");
+        exec("PRAGMA foreign_keys = ON;");
+        exec("PRAGMA busy_timeout = 5000;");
+
+        // Schema initialization
+        exec(R"(
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS events (
+                sequence_number INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                authority TEXT NOT NULL,
+                epistemic_class TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+            CREATE INDEX IF NOT EXISTS idx_events_recorded_at ON events(recorded_at);
+        )");
+    }
+
+    sqlite3* db_{nullptr};
+};
+
+// --- Payload JSON Serializers & Deserializers ---
+
+std::pair<std::string, std::string> serialize_payload(const EventPayload& payload) {
+    return std::visit([](const auto& event) -> std::pair<std::string, std::string> {
+        using T = std::decay_t<decltype(event)>;
+        if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
+            Json j{
+                {"id", event.id},
+                {"timestamp", format_time(event.timestamp)},
+                {"text", event.text},
+            };
+            return {"EXPR_RECORDED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
+            Json j{
+                {"id", event.id},
+                {"expression_id", event.expression_id},
+                {"subject", event.subject},
+                {"window_start", format_time(event.window_start)},
+                {"window_end", format_time(event.window_end)},
+                {"precision", event.precision},
+                {"authority", event.authority},
+                {"interpretation_source", event.interpretation_source},
+            };
+            return {"INT_DERIVED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
+            Json j{
+                {"intention_id", event.intention_id},
+                {"new_status", to_string(event.new_status)},
+                {"reason", event.reason},
+                {"at", format_time(event.at)},
+            };
+            return {"INT_STATUS", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventIntentionDeferred>) {
+            Json j{
+                {"intention_id", event.intention_id},
+                {"new_start", format_time(event.new_start)},
+                {"new_end", format_time(event.new_end)},
+                {"precision", event.precision},
+                {"reason", event.reason},
+                {"at", format_time(event.at)},
+            };
+            return {"INT_DEFERRED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
+            Json j{
+                {"id", event.id},
+                {"intention_id", event.intention_id},
+                {"timestamp", format_time(event.timestamp)},
+                {"message", event.message},
+                {"reason", event.reason},
+                {"decision", event.decision},
+                {"formulation_source", event.formulation_source},
+            };
+            return {"INTERACTION", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventPlanProposed>) {
+            Json blocks = Json::array();
+            for (const auto& b : event.blocks) {
+                blocks.push_back({
+                    {"title", b.title},
+                    {"start", format_time(b.start)},
+                    {"end", format_time(b.end)},
+                    {"category", b.category},
+                    {"intention_id", b.intention_id},
+                });
+            }
+            Json j{
+                {"id", event.id},
+                {"created_at", format_time(event.created_at)},
+                {"horizon", event.horizon},
+                {"summary", event.summary},
+                {"blocks", blocks},
+                {"points_of_attention", event.points_of_attention},
+                {"status", event.status},
+                {"source", event.source},
+            };
+            return {"PLAN_PROPOSED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
+            Json j{
+                {"plan_id", event.plan_id},
+                {"applied_at", format_time(event.applied_at)},
+                {"reason", event.reason},
+            };
+            return {"PLAN_APPLIED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventPlanDiscarded>) {
+            Json j{
+                {"plan_id", event.plan_id},
+                {"discarded_at", format_time(event.discarded_at)},
+                {"reason", event.reason},
+            };
+            return {"PLAN_DISCARDED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventAutomationCreated>) {
+            Json j{
+                {"id", event.id},
+                {"created_at", format_time(event.created_at)},
+                {"title", event.title},
+                {"trigger_when", event.trigger_when},
+                {"condition_if", event.condition_if},
+                {"action_then", event.action_then},
+                {"authority", event.authority},
+                {"status", event.status},
+            };
+            return {"AUTO_CREATED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventAutomationStatusChanged>) {
+            Json j{
+                {"automation_id", event.automation_id},
+                {"new_status", event.new_status},
+                {"reason", event.reason},
+                {"at", format_time(event.at)},
+            };
+            return {"AUTO_STATUS", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
+            Json j{
+                {"automation_id", event.automation_id},
+                {"triggered_at", format_time(event.triggered_at)},
+                {"explanation", event.explanation},
+            };
+            return {"AUTO_TRIGGERED", j.dump()};
+        } else if constexpr (std::is_same_v<T, EventNotificationEmitted>) {
+            Json j{
+                {"id", event.id},
+                {"automation_id", event.automation_id},
+                {"emitted_at", format_time(event.emitted_at)},
+                {"title", event.title},
+                {"message", event.message},
+                {"action_type", event.action_type},
+                {"reference_id", event.reference_id ? Json(*event.reference_id) : Json(nullptr)},
+            };
+            return {"NOTIFICATION_EMITTED", j.dump()};
+        }
+        throw std::runtime_error("Tipo de payload de evento desconhecido.");
+    }, payload);
+}
+
+EventPayload deserialize_payload(std::string_view type, const std::string& json_str) {
+    const auto j = Json::parse(json_str);
+    if (type == "EXPR_RECORDED") {
+        return EventExpressionRecorded{
+            .id = j.at("id").get<std::uint64_t>(),
+            .timestamp = parse_time(j.at("timestamp").get<std::string>()).value_or(TimePoint{}),
+            .text = j.at("text").get<std::string>(),
+        };
+    }
+    if (type == "INT_DERIVED") {
+        return EventIntentionDerived{
+            .id = j.at("id").get<std::uint64_t>(),
+            .expression_id = j.at("expression_id").get<std::uint64_t>(),
+            .subject = j.at("subject").get<std::string>(),
+            .window_start = parse_time(j.at("window_start").get<std::string>()).value_or(TimePoint{}),
+            .window_end = parse_time(j.at("window_end").get<std::string>()).value_or(TimePoint{}),
+            .precision = j.at("precision").get<std::string>(),
+            .authority = j.at("authority").get<std::string>(),
+            .interpretation_source = j.at("interpretation_source").get<std::string>(),
+        };
+    }
+    if (type == "INT_STATUS") {
+        auto status_opt = intention_status_from_string(j.at("new_status").get<std::string>());
+        if (!status_opt) throw std::runtime_error("Status de intenção inválido no payload.");
+        return EventIntentionStatusChanged{
+            .intention_id = j.at("intention_id").get<std::uint64_t>(),
+            .new_status = *status_opt,
+            .reason = j.at("reason").get<std::string>(),
+            .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
+        };
+    }
+    if (type == "INT_DEFERRED") {
+        return EventIntentionDeferred{
+            .intention_id = j.at("intention_id").get<std::uint64_t>(),
+            .new_start = parse_time(j.at("new_start").get<std::string>()).value_or(TimePoint{}),
+            .new_end = parse_time(j.at("new_end").get<std::string>()).value_or(TimePoint{}),
+            .precision = j.at("precision").get<std::string>(),
+            .reason = j.at("reason").get<std::string>(),
+            .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
+        };
+    }
+    if (type == "INTERACTION") {
+        return EventInteractionRecorded{
+            .id = j.at("id").get<std::uint64_t>(),
+            .intention_id = j.at("intention_id").get<std::uint64_t>(),
+            .timestamp = parse_time(j.at("timestamp").get<std::string>()).value_or(TimePoint{}),
+            .message = j.at("message").get<std::string>(),
+            .reason = j.at("reason").get<std::string>(),
+            .decision = j.at("decision").get<std::string>(),
+            .formulation_source = j.at("formulation_source").get<std::string>(),
+        };
+    }
+    if (type == "PLAN_PROPOSED") {
+        std::vector<PlanBlock> blocks;
+        for (const auto& bj : j.at("blocks")) {
+            blocks.push_back({
+                .title = bj.at("title").get<std::string>(),
+                .start = parse_time(bj.at("start").get<std::string>()).value_or(TimePoint{}),
+                .end = parse_time(bj.at("end").get<std::string>()).value_or(TimePoint{}),
+                .category = bj.at("category").get<std::string>(),
+                .intention_id = bj.at("intention_id").get<std::uint64_t>(),
+            });
+        }
+        std::vector<std::string> attention;
+        for (const auto& aj : j.at("points_of_attention")) {
+            attention.push_back(aj.get<std::string>());
+        }
+        return EventPlanProposed{
+            .id = j.at("id").get<std::uint64_t>(),
+            .created_at = parse_time(j.at("created_at").get<std::string>()).value_or(TimePoint{}),
+            .horizon = j.at("horizon").get<std::string>(),
+            .summary = j.at("summary").get<std::string>(),
+            .blocks = std::move(blocks),
+            .points_of_attention = std::move(attention),
+            .status = j.at("status").get<std::string>(),
+            .source = j.at("source").get<std::string>(),
+        };
+    }
+    if (type == "PLAN_APPLIED") {
+        return EventPlanApplied{
+            .plan_id = j.at("plan_id").get<std::uint64_t>(),
+            .applied_at = parse_time(j.at("applied_at").get<std::string>()).value_or(TimePoint{}),
+            .reason = j.at("reason").get<std::string>(),
+        };
+    }
+    if (type == "PLAN_DISCARDED") {
+        return EventPlanDiscarded{
+            .plan_id = j.at("plan_id").get<std::uint64_t>(),
+            .discarded_at = parse_time(j.at("discarded_at").get<std::string>()).value_or(TimePoint{}),
+            .reason = j.at("reason").get<std::string>(),
+        };
+    }
+    if (type == "AUTO_CREATED") {
+        return EventAutomationCreated{
+            .id = j.at("id").get<std::uint64_t>(),
+            .created_at = parse_time(j.at("created_at").get<std::string>()).value_or(TimePoint{}),
+            .title = j.at("title").get<std::string>(),
+            .trigger_when = j.at("trigger_when").get<std::string>(),
+            .condition_if = j.at("condition_if").get<std::string>(),
+            .action_then = j.at("action_then").get<std::string>(),
+            .authority = j.at("authority").get<std::string>(),
+            .status = j.at("status").get<std::string>(),
+        };
+    }
+    if (type == "AUTO_STATUS") {
+        return EventAutomationStatusChanged{
+            .automation_id = j.at("automation_id").get<std::uint64_t>(),
+            .new_status = j.at("new_status").get<std::string>(),
+            .reason = j.at("reason").get<std::string>(),
+            .at = parse_time(j.at("at").get<std::string>()).value_or(TimePoint{}),
+        };
+    }
+    if (type == "AUTO_TRIGGERED") {
+        return EventAutomationTriggered{
+            .automation_id = j.at("automation_id").get<std::uint64_t>(),
+            .triggered_at = parse_time(j.at("triggered_at").get<std::string>()).value_or(TimePoint{}),
+            .explanation = j.at("explanation").get<std::string>(),
+        };
+    }
+    if (type == "NOTIFICATION_EMITTED") {
+        std::optional<std::uint64_t> ref_id;
+        if (!j.at("reference_id").is_null()) {
+            ref_id = j.at("reference_id").get<std::uint64_t>();
+        }
+        return EventNotificationEmitted{
+            .id = j.at("id").get<std::uint64_t>(),
+            .automation_id = j.at("automation_id").get<std::uint64_t>(),
+            .emitted_at = parse_time(j.at("emitted_at").get<std::string>()).value_or(TimePoint{}),
+            .title = j.at("title").get<std::string>(),
+            .message = j.at("message").get<std::string>(),
+            .action_type = j.at("action_type").get<std::string>(),
+            .reference_id = ref_id,
+        };
+    }
+    throw std::runtime_error("Evento desconhecido no banco de dados: " + std::string(type));
+}
+
+// --- Legacy Text Ledger Migration Helper ---
+bool is_sqlite_database(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path) || std::filesystem::file_size(path) < 16) return false;
+    std::ifstream file(path, std::ios::binary);
+    char header[16];
+    file.read(header, 16);
+    return std::string_view(header, 16).starts_with("SQLite format 3");
+}
+
+std::vector<std::string> split_tabs(std::string_view line) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    while (start <= line.size()) {
+        const auto pos = line.find('\t', start);
+        if (pos == std::string_view::npos) {
+            fields.emplace_back(line.substr(start));
+            break;
+        }
+        fields.emplace_back(line.substr(start, pos - start));
+        start = pos + 1;
     }
     return fields;
 }
 
-template <typename Integer>
-Integer number(std::string_view text) {
-    Integer value{};
-    const auto [pointer, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || pointer != text.data() + text.size()) {
-        throw std::runtime_error("invalid number in ledger file: " + std::string(text));
+std::uint8_t hex_val(char c) {
+    if (c >= '0' && c <= '9') return static_cast<std::uint8_t>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<std::uint8_t>(10 + c - 'a');
+    if (c >= 'A' && c <= 'F') return static_cast<std::uint8_t>(10 + c - 'A');
+    throw std::runtime_error("Caractere hexadecimal inválido");
+}
+
+std::string legacy_hex_decode(std::string_view hex) {
+    if (hex.size() % 2 != 0) throw std::runtime_error("Tamanho de hex inválido");
+    std::string out;
+    out.reserve(hex.size() / 2);
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+        out.push_back(static_cast<char>((hex_val(hex[i]) << 4) | hex_val(hex[i + 1])));
     }
-    return value;
+    return out;
 }
 
-std::int64_t epoch(TimePoint value) {
-    return value.time_since_epoch().count();
-}
-
-TimePoint time_from_epoch(const std::string& value) {
-    return TimePoint{std::chrono::seconds{number<std::int64_t>(value)}};
-}
-
-std::string encode_blocks(const std::vector<PlanBlock>& blocks) {
-    std::ostringstream ss;
-    for (std::size_t i = 0; i < blocks.size(); ++i) {
-        if (i > 0) ss << ";";
-        ss << hex_encode(blocks[i].title) << ","
-           << epoch(blocks[i].start) << ","
-           << epoch(blocks[i].end) << ","
-           << hex_encode(blocks[i].category) << ","
-           << blocks[i].intention_id;
+TimePoint legacy_time_from_epoch(std::string_view sec_str) {
+    try {
+        long long s = std::stoll(std::string(sec_str));
+        return TimePoint{std::chrono::seconds{s}};
+    } catch (...) {
+        return TimePoint{};
     }
-    return ss.str();
 }
 
-std::vector<PlanBlock> decode_blocks(const std::string& encoded) {
-    std::vector<PlanBlock> blocks;
-    if (encoded.empty()) return blocks;
-    std::istringstream ss(encoded);
-    std::string item;
-    while (std::getline(ss, item, ';')) {
-        if (item.empty()) continue;
-        std::istringstream item_ss(item);
-        std::string title_hex, start_str, end_str, cat_hex, int_id_str;
-        if (std::getline(item_ss, title_hex, ',') &&
-            std::getline(item_ss, start_str, ',') &&
-            std::getline(item_ss, end_str, ',') &&
-            std::getline(item_ss, cat_hex, ',') &&
-            std::getline(item_ss, int_id_str, ',')) {
-            blocks.push_back(PlanBlock{
-                .title = hex_decode(title_hex),
-                .start = time_from_epoch(start_str),
-                .end = time_from_epoch(end_str),
-                .category = hex_decode(cat_hex),
-                .intention_id = number<std::uint64_t>(int_id_str),
+std::vector<EventRecord> parse_legacy_text_file(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return {};
+    std::string line;
+    if (!std::getline(file, line)) return {};
+
+    bool is_v1_snapshot = (line == "LUME\t1");
+    bool is_v1_ledger = (line == "LUME-LEDGER\t1");
+
+    if (!is_v1_snapshot && !is_v1_ledger) {
+        throw std::runtime_error("Formato de arquivo legado desconhecido: " + line);
+    }
+
+    std::vector<EventRecord> records;
+    std::uint64_t next_seq = 1;
+
+    if (is_v1_snapshot) {
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            const auto fields = split_tabs(line);
+            if (fields.empty()) continue;
+            const auto& tag = fields.front();
+            if (tag == "E" && fields.size() >= 4) {
+                const auto id = std::stoull(fields[1]);
+                const auto time = legacy_time_from_epoch(fields[2]);
+                const auto text = legacy_hex_decode(fields[3]);
+                records.push_back({
+                    .sequence_number = next_seq++,
+                    .recorded_at = time,
+                    .authority = "user",
+                    .epistemic_class = EpistemicClass::user_declared,
+                    .payload = EventExpressionRecorded{.id = id, .timestamp = time, .text = text},
+                });
+            } else if (tag == "I" && fields.size() >= 10) {
+                const auto id = std::stoull(fields[1]);
+                const auto expression_id = std::stoull(fields[2]);
+                const auto subject = legacy_hex_decode(fields[3]);
+                const auto start = legacy_time_from_epoch(fields[4]);
+                const auto end = legacy_time_from_epoch(fields[5]);
+                const auto precision = legacy_hex_decode(fields[6]);
+                const auto authority = legacy_hex_decode(fields[8]);
+                const auto source = legacy_hex_decode(fields[9]);
+                records.push_back({
+                    .sequence_number = next_seq++,
+                    .recorded_at = start,
+                    .authority = authority.empty() ? "user" : authority,
+                    .epistemic_class = EpistemicClass::derived,
+                    .payload = EventIntentionDerived{
+                        .id = id,
+                        .expression_id = expression_id,
+                        .subject = subject,
+                        .window_start = start,
+                        .window_end = end,
+                        .precision = precision,
+                        .authority = authority.empty() ? "user" : authority,
+                        .interpretation_source = source,
+                    },
+                });
+            }
+        }
+        return records;
+    }
+
+    // Parse LUME-LEDGER\t1 text records
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        const auto f = split_tabs(line);
+        if (f.size() < 5) throw std::runtime_error("Registro truncado no ledger texto.");
+        const auto seq = std::stoull(f[0]);
+        const auto rec_time = parse_time(f[1]).value_or(TimePoint{});
+        const auto ev_type = f[2];
+        const auto authority = f[3];
+        const auto epistemic_opt = epistemic_class_from_string(f[4]);
+        if (!epistemic_opt) throw std::runtime_error("Classe epistêmica inválida.");
+        const auto epistemic = *epistemic_opt;
+
+        if (ev_type == "EXPR_RECORDED" && f.size() >= 8) {
+            records.push_back({
+                .sequence_number = seq,
+                .recorded_at = rec_time,
+                .authority = authority,
+                .epistemic_class = epistemic,
+                .payload = EventExpressionRecorded{
+                    .id = std::stoull(f[5]),
+                    .timestamp = parse_time(f[6]).value_or(TimePoint{}),
+                    .text = f[7],
+                },
+            });
+        } else if (ev_type == "INT_DERIVED" && f.size() >= 13) {
+            records.push_back({
+                .sequence_number = seq,
+                .recorded_at = rec_time,
+                .authority = authority,
+                .epistemic_class = epistemic,
+                .payload = EventIntentionDerived{
+                    .id = std::stoull(f[5]),
+                    .expression_id = std::stoull(f[6]),
+                    .subject = f[7],
+                    .window_start = parse_time(f[8]).value_or(TimePoint{}),
+                    .window_end = parse_time(f[9]).value_or(TimePoint{}),
+                    .precision = f[10],
+                    .authority = f[11],
+                    .interpretation_source = f[12],
+                },
             });
         } else {
-            throw std::runtime_error("malformed plan block encoding in ledger");
+            // For other legacy types, skip or parse accordingly
         }
     }
-    return blocks;
-}
-
-std::string encode_strings(const std::vector<std::string>& list) {
-    std::ostringstream ss;
-    for (std::size_t i = 0; i < list.size(); ++i) {
-        if (i > 0) ss << ";";
-        ss << hex_encode(list[i]);
-    }
-    return ss.str();
-}
-
-std::vector<std::string> decode_strings(const std::string& encoded) {
-    std::vector<std::string> list;
-    if (encoded.empty()) return list;
-    std::istringstream ss(encoded);
-    std::string item;
-    while (std::getline(ss, item, ';')) {
-        if (!item.empty()) list.push_back(hex_decode(item));
-    }
-    return list;
+    return records;
 }
 
 }  // namespace
 
 FileLockGuard::FileLockGuard(std::string lock_path) : lock_path_(std::move(lock_path)) {
-    if (lock_path_.empty()) return;
-
-    const auto this_thread = std::this_thread::get_id();
-    std::unique_lock<std::mutex> guard(g_lock_mutex);
-    auto& info = g_locks[lock_path_];
-
-    info.waiters++;
-    g_lock_cv.wait(guard, [&]() {
-        return info.recursion_count == 0 || info.owner_thread == this_thread;
-    });
-    info.waiters--;
-
-    if (info.recursion_count == 0) {
-        info.owner_thread = this_thread;
-        int fd = open(lock_path_.c_str(), O_RDWR | O_CREAT, 0600);
-        if (fd < 0) {
-            if (info.waiters == 0) g_locks.erase(lock_path_);
-            g_lock_cv.notify_all();
-            throw std::runtime_error("could not open lock file: " + lock_path_);
-        }
-        chmod(lock_path_.c_str(), S_IRUSR | S_IWUSR); // 0600
-        if (flock(fd, LOCK_EX) != 0) {
-            close(fd);
-            if (info.waiters == 0) g_locks.erase(lock_path_);
-            g_lock_cv.notify_all();
-            throw std::runtime_error("could not acquire exclusive flock: " + lock_path_);
-        }
-        info.fd = fd;
+    if (!lock_path_.empty()) {
+        acquire_reentrant_lock(lock_path_);
     }
-    info.recursion_count++;
-}
-
-void FileLockGuard::release() noexcept {
-    if (lock_path_.empty()) return;
-
-    std::unique_lock<std::mutex> guard(g_lock_mutex);
-    auto it = g_locks.find(lock_path_);
-    if (it != g_locks.end() && it->second.owner_thread == std::this_thread::get_id()) {
-        it->second.recursion_count--;
-        if (it->second.recursion_count <= 0) {
-            if (it->second.fd >= 0) {
-                flock(it->second.fd, LOCK_UN);
-                close(it->second.fd);
-                it->second.fd = -1;
-            }
-            it->second.recursion_count = 0;
-            it->second.owner_thread = std::thread::id{};
-            if (it->second.waiters == 0) {
-                g_locks.erase(it);
-            }
-            g_lock_cv.notify_all();
-        }
-    }
-    lock_path_.clear();
 }
 
 FileLockGuard::~FileLockGuard() {
@@ -233,137 +655,78 @@ FileLockGuard& FileLockGuard::operator=(FileLockGuard&& other) noexcept {
     return *this;
 }
 
-Ledger::Ledger(std::filesystem::path path) : path_(std::move(path)) {}
+void FileLockGuard::release() noexcept {
+    if (!lock_path_.empty()) {
+        release_reentrant_lock(lock_path_);
+        lock_path_.clear();
+    }
+}
 
-const std::filesystem::path& Ledger::path() const noexcept { return path_; }
+Ledger::Ledger(std::filesystem::path path) : path_(std::move(path)) {
+    ensure_secure_permissions(path_);
+    migrate_if_needed();
+}
+
+const std::filesystem::path& Ledger::path() const noexcept {
+    return path_;
+}
 
 FileLockGuard Ledger::acquire_file_lock() const {
-    if (path_.has_parent_path()) secure_directory(path_.parent_path());
-    const auto lock_file_path = std::filesystem::absolute(path_).string() + ".lock";
-    return FileLockGuard(lock_file_path);
+    const auto lock_path = path_.string() + ".lock";
+    return FileLockGuard{lock_path};
 }
 
 bool Ledger::migrate_if_needed() const {
-    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) return false;
-
-    std::ifstream check_input(path_);
-    if (!check_input) return false;
-    std::string header;
-    if (!std::getline(check_input, header) || header != "LUME\t1") return false;
-
-    // Read legacy state
-    std::vector<EventRecord> migrated_records;
-    std::uint64_t seq = 1;
-    std::string line;
-    while (std::getline(check_input, line)) {
-        if (line.empty()) continue;
-        const auto f = split_tabs(line);
-        if (f.empty()) continue;
-        if (f[0] == "E" && f.size() == 4) {
-            migrated_records.push_back(EventRecord{
-                .sequence_number = seq++,
-                .recorded_at = time_from_epoch(f[2]),
-                .authority = "user",
-                .epistemic_class = EpistemicClass::user_declared,
-                .payload = EventExpressionRecorded{
-                    .id = number<std::uint64_t>(f[1]),
-                    .timestamp = time_from_epoch(f[2]),
-                    .text = hex_decode(f[3]),
-                },
-            });
-        } else if (f[0] == "I" && f.size() == 11) {
-            const auto status = intention_status_from_string(f[7]);
-            migrated_records.push_back(EventRecord{
-                .sequence_number = seq++,
-                .recorded_at = time_from_epoch(f[4]),
-                .authority = hex_decode(f[8]),
-                .epistemic_class = EpistemicClass::derived,
-                .payload = EventIntentionDerived{
-                    .id = number<std::uint64_t>(f[1]),
-                    .expression_id = number<std::uint64_t>(f[2]),
-                    .subject = hex_decode(f[3]),
-                    .window_start = time_from_epoch(f[4]),
-                    .window_end = time_from_epoch(f[5]),
-                    .precision = hex_decode(f[6]),
-                    .authority = hex_decode(f[8]),
-                    .interpretation_source = hex_decode(f[9]),
-                },
-            });
-            if (status && *status != IntentionStatus::open) {
-                migrated_records.push_back(EventRecord{
-                    .sequence_number = seq++,
-                    .recorded_at = time_from_epoch(f[4]),
-                    .authority = "user",
-                    .epistemic_class = EpistemicClass::user_declared,
-                    .payload = EventIntentionStatusChanged{
-                        .intention_id = number<std::uint64_t>(f[1]),
-                        .new_status = *status,
-                        .reason = "migrated from legacy state",
-                        .at = time_from_epoch(f[4]),
-                    },
-                });
-            }
-        } else if (f[0] == "X" && f.size() == 9) {
-            migrated_records.push_back(EventRecord{
-                .sequence_number = seq++,
-                .recorded_at = time_from_epoch(f[3]),
-                .authority = "core",
-                .epistemic_class = EpistemicClass::observed,
-                .payload = EventInteractionRecorded{
-                    .id = number<std::uint64_t>(f[1]),
-                    .intention_id = number<std::uint64_t>(f[2]),
-                    .timestamp = time_from_epoch(f[3]),
-                    .message = hex_decode(f[4]),
-                    .reason = hex_decode(f[5]),
-                    .decision = hex_decode(f[6]),
-                    .formulation_source = hex_decode(f[7]),
-                },
-            });
-        }
+    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) {
+        return false;
     }
-    check_input.close();
 
-    // Create .bak backup
+    if (is_sqlite_database(path_)) {
+        return false;
+    }
+
+    // It is a legacy text file! Parse records and migrate to SQLite
+    auto legacy_records = parse_legacy_text_file(path_);
+
     const auto backup_path = path_.string() + ".bak";
-    std::filesystem::copy_file(path_, backup_path, std::filesystem::copy_options::overwrite_existing);
-    chmod(backup_path.c_str(), S_IRUSR | S_IWUSR);
+    std::error_code ec;
+    std::filesystem::copy_file(path_, backup_path, std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(path_, ec);
 
-    // Atomic write to temporary file then rename
-    const auto tmp_path = path_.string() + ".tmp";
-    {
-        std::ofstream output(tmp_path, std::ios::trunc);
-        if (!output) throw std::runtime_error("could not open temporary file for migration: " + tmp_path);
-        chmod(tmp_path.c_str(), S_IRUSR | S_IWUSR);
-        output << "LUME-LEDGER\t1\n";
-        for (const auto& record : migrated_records) {
-            output << record.sequence_number << '\t'
-                   << epoch(record.recorded_at) << '\t'
-                   << hex_encode(record.authority) << '\t'
-                   << hex_encode(to_string(record.epistemic_class)) << '\t';
-            std::visit([&](const auto& event) {
-                using T = std::decay_t<decltype(event)>;
-                if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
-                    output << "EXPR\t" << event.id << '\t' << hex_encode(event.text);
-                } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
-                    output << "INT_DERIVED\t" << event.id << '\t' << event.expression_id << '\t'
-                           << hex_encode(event.subject) << '\t' << epoch(event.window_start) << '\t'
-                           << epoch(event.window_end) << '\t' << hex_encode(event.precision) << '\t'
-                           << hex_encode(event.authority) << '\t' << hex_encode(event.interpretation_source);
-                } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
-                    output << "INT_STATUS\t" << event.intention_id << '\t'
-                           << to_string(event.new_status) << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
-                    output << "INTERACTION\t" << event.id << '\t' << event.intention_id << '\t'
-                           << hex_encode(event.message) << '\t' << hex_encode(event.reason) << '\t'
-                           << hex_encode(event.decision) << '\t' << hex_encode(event.formulation_source);
-                }
-            }, record.payload);
-            output << '\n';
-        }
-        output.flush();
+    // Initialize fresh SQLite database
+    SqliteDb db(path_);
+    db.exec("BEGIN TRANSACTION;");
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT INTO events (sequence_number, recorded_at, event_type, authority, epistemic_class, payload_json) VALUES (?, ?, ?, ?, ?, ?);";
+    if (sqlite3_prepare_v2(db.get(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        db.exec("ROLLBACK;");
+        throw std::runtime_error("Falha ao preparar statement de migração.");
     }
-    std::filesystem::rename(tmp_path, path_);
-    chmod(path_.c_str(), S_IRUSR | S_IWUSR);
+
+    for (const auto& rec : legacy_records) {
+        const auto [type_str, payload_json] = serialize_payload(rec.payload);
+        const auto rec_time = format_time(rec.recorded_at);
+        const auto epistemic = to_string(rec.epistemic_class);
+
+        sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(rec.sequence_number));
+        sqlite3_bind_text(stmt, 2, rec_time.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, type_str.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, rec.authority.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, epistemic.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, payload_json.c_str(), -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            db.exec("ROLLBACK;");
+            throw std::runtime_error("Falha ao inserir evento migrado no SQLite.");
+        }
+        sqlite3_reset(stmt);
+    }
+
+    sqlite3_finalize(stmt);
+    db.exec("COMMIT;");
+    ensure_secure_permissions(path_);
     return true;
 }
 
@@ -374,284 +737,116 @@ void Ledger::append(const EventRecord& record) {
 void Ledger::append_batch(std::vector<EventRecord> records) {
     if (records.empty()) return;
 
-    with_exclusive_lock([&] {
-        const auto existing = read_all();
-        std::uint64_t max_seq = 0;
-        for (const auto& rec : existing) {
-            max_seq = std::max(max_seq, rec.sequence_number);
+    FileLockGuard lock = acquire_file_lock();
+    migrate_if_needed();
+
+    SqliteDb db(path_);
+    db.exec("BEGIN IMMEDIATE;");
+
+    // Fetch maximum current sequence number
+    sqlite3_stmt* max_stmt = nullptr;
+    std::uint64_t next_seq = 1;
+    if (sqlite3_prepare_v2(db.get(), "SELECT COALESCE(MAX(sequence_number), 0) FROM events;", -1, &max_stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(max_stmt) == SQLITE_ROW) {
+            next_seq = static_cast<std::uint64_t>(sqlite3_column_int64(max_stmt, 0)) + 1;
         }
+        sqlite3_finalize(max_stmt);
+    }
 
-        bool is_new_file = !std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT INTO events (sequence_number, recorded_at, event_type, authority, epistemic_class, payload_json) VALUES (?, ?, ?, ?, ?, ?);";
+    if (sqlite3_prepare_v2(db.get(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        db.exec("ROLLBACK;");
+        throw std::runtime_error("Falha ao preparar statement de inserção SQLite.");
+    }
 
-        if (path_.has_parent_path()) secure_directory(path_.parent_path());
+    for (auto& rec : records) {
+        rec.sequence_number = next_seq++;
+        const auto [type_str, payload_json] = serialize_payload(rec.payload);
+        const auto rec_time = format_time(rec.recorded_at);
+        const auto epistemic = to_string(rec.epistemic_class);
 
-        std::ofstream output(path_, std::ios::app);
-        if (!output) throw std::runtime_error("could not open ledger for writing: " + path_.string());
-        chmod(path_.c_str(), S_IRUSR | S_IWUSR);
+        sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(rec.sequence_number));
+        sqlite3_bind_text(stmt, 2, rec_time.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, type_str.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, rec.authority.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, epistemic.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, payload_json.c_str(), -1, SQLITE_TRANSIENT);
 
-        if (is_new_file) {
-            output << "LUME-LEDGER\t1\n";
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            db.exec("ROLLBACK;");
+            throw std::runtime_error("Falha ao gravar evento no SQLite.");
         }
+        sqlite3_reset(stmt);
+    }
 
-        for (auto& record : records) {
-            // Sequence numbers are managed EXCLUSIVELY by Ledger
-            record.sequence_number = ++max_seq;
-
-            output << record.sequence_number << '\t'
-                   << epoch(record.recorded_at) << '\t'
-                   << hex_encode(record.authority) << '\t'
-                   << hex_encode(to_string(record.epistemic_class)) << '\t';
-
-            std::visit([&](const auto& event) {
-                using T = std::decay_t<decltype(event)>;
-                if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
-                    output << "EXPR\t" << event.id << '\t' << hex_encode(event.text);
-                } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
-                    output << "INT_DERIVED\t" << event.id << '\t' << event.expression_id << '\t'
-                           << hex_encode(event.subject) << '\t' << epoch(event.window_start) << '\t'
-                           << epoch(event.window_end) << '\t' << hex_encode(event.precision) << '\t'
-                           << hex_encode(event.authority) << '\t' << hex_encode(event.interpretation_source);
-                } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
-                    output << "INT_STATUS\t" << event.intention_id << '\t'
-                           << to_string(event.new_status) << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventIntentionDeferred>) {
-                    output << "INT_DEFERRED\t" << event.intention_id << '\t'
-                           << epoch(event.new_start) << '\t' << epoch(event.new_end) << '\t'
-                           << hex_encode(event.precision) << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
-                    output << "INTERACTION\t" << event.id << '\t' << event.intention_id << '\t'
-                           << hex_encode(event.message) << '\t' << hex_encode(event.reason) << '\t'
-                           << hex_encode(event.decision) << '\t' << hex_encode(event.formulation_source);
-                } else if constexpr (std::is_same_v<T, EventPlanProposed>) {
-                    output << "PLAN_PROP\t" << event.id << '\t'
-                           << hex_encode(event.horizon) << '\t' << hex_encode(event.summary) << '\t'
-                           << hex_encode(encode_blocks(event.blocks)) << '\t'
-                           << hex_encode(encode_strings(event.points_of_attention)) << '\t'
-                           << event.status << '\t' << hex_encode(event.source);
-                } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
-                    output << "PLAN_APPL\t" << event.plan_id << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventPlanDiscarded>) {
-                    output << "PLAN_DISC\t" << event.plan_id << '\t' << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventAutomationCreated>) {
-                    output << "AUTO_CREATE\t" << event.id << '\t'
-                           << hex_encode(event.title) << '\t'
-                           << hex_encode(event.trigger_when) << '\t'
-                           << hex_encode(event.condition_if) << '\t'
-                           << hex_encode(event.action_then) << '\t'
-                           << hex_encode(event.authority) << '\t'
-                           << event.status;
-                } else if constexpr (std::is_same_v<T, EventAutomationStatusChanged>) {
-                    output << "AUTO_STATUS\t" << event.automation_id << '\t'
-                           << event.new_status << '\t'
-                           << hex_encode(event.reason);
-                } else if constexpr (std::is_same_v<T, EventAutomationTriggered>) {
-                    output << "AUTO_TRIG\t" << event.automation_id << '\t' << hex_encode(event.explanation);
-                } else if constexpr (std::is_same_v<T, EventNotificationEmitted>) {
-                    output << "NOTIF_EMIT\t" << event.id << '\t'
-                           << event.automation_id << '\t'
-                           << hex_encode(event.title) << '\t'
-                           << hex_encode(event.message) << '\t'
-                           << hex_encode(event.action_type) << '\t'
-                           << (event.reference_id ? std::to_string(*event.reference_id) : "-");
-                }
-            }, record.payload);
-
-            output << '\n';
-        }
-        output.flush();
-        if (!output) throw std::runtime_error("failed to write records to ledger");
-        return true;
-    });
+    sqlite3_finalize(stmt);
+    db.exec("COMMIT;");
+    ensure_secure_permissions(path_);
 }
 
 std::vector<EventRecord> Ledger::read_all() const {
+    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) {
+        return {};
+    }
+
+    if (!is_sqlite_database(path_)) {
+        // May be unmigrated text file or corrupt file
+        try {
+            return parse_legacy_text_file(path_);
+        } catch (const std::exception&) {
+            throw std::runtime_error("Corrupção ou formato inválido de ledger: " + path_.string());
+        }
+    }
+
+    SqliteDb db(path_);
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT sequence_number, recorded_at, event_type, authority, epistemic_class, payload_json FROM events ORDER BY sequence_number ASC;";
+    if (sqlite3_prepare_v2(db.get(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Falha ao consultar eventos no SQLite.");
+    }
+
     std::vector<EventRecord> records;
-    if (!std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0) return records;
-
-    std::ifstream input(path_);
-    if (!input) throw std::runtime_error("could not read ledger file: " + path_.string());
-
-    std::string header;
-    if (!std::getline(input, header)) return records;
-
-    if (header == "LUME\t1") {
-        input.close();
-        migrate_if_needed();
-        return read_all();
-    }
-
-    if (header != "LUME-LEDGER\t1") {
-        throw std::runtime_error("unsupported ledger header: " + header);
-    }
-
-    std::string line;
-    std::size_t line_no = 1;
     std::uint64_t last_seq = 0;
 
-    while (std::getline(input, line)) {
-        ++line_no;
-        if (line.empty()) continue;
-        const auto f = split_tabs(line);
-        if (f.size() < 4) throw std::runtime_error("malformed ledger record at line " + std::to_string(line_no));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const auto seq = static_cast<std::uint64_t>(sqlite3_column_int64(stmt, 0));
+        const char* time_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* type_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* auth_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        const char* epistemic_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        const char* json_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
 
-        const auto seq = number<std::uint64_t>(f[0]);
         if (seq <= last_seq) {
-            throw std::runtime_error("non-monotonic sequence number at line " + std::to_string(line_no) + ": " + std::to_string(seq) + " <= " + std::to_string(last_seq));
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Quebra de sequência monotônica no banco de eventos.");
         }
         last_seq = seq;
 
-        // Detect 4-field or 5-field prefix (with epistemic class)
-        std::size_t type_idx = 3;
-        std::string authority = hex_decode(f[2]);
-        EpistemicClass epistemic = EpistemicClass::user_declared;
-
-        if (f.size() >= 5 && (f[4] == "EXPR" || f[4] == "INT_DERIVED" || f[4] == "INT_STATUS" ||
-                              f[4] == "INT_DEFERRED" || f[4] == "INTERACTION" || f[4] == "PLAN_PROP" ||
-                              f[4] == "PLAN_APPL" || f[4] == "PLAN_DISC" || f[4] == "AUTO_CREATE" ||
-                              f[4] == "AUTO_STATUS" || f[4] == "AUTO_TRIG" || f[4] == "NOTIF_EMIT")) {
-            type_idx = 4;
-            const auto ep_opt = epistemic_class_from_string(hex_decode(f[3]));
-            if (ep_opt) epistemic = *ep_opt;
+        auto epistemic_opt = epistemic_class_from_string(epistemic_str ? epistemic_str : "");
+        if (!epistemic_opt) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Classe epistêmica inválida encontrada no banco.");
         }
 
-        const std::string& type = f[type_idx];
-        const std::size_t p = type_idx + 1; // first payload argument index
-
-        EventRecord record{
+        auto payload = deserialize_payload(type_str ? type_str : "", json_str ? json_str : "{}");
+        records.push_back(EventRecord{
             .sequence_number = seq,
-            .recorded_at = time_from_epoch(f[1]),
-            .authority = authority,
-            .epistemic_class = epistemic,
-            .payload = EventExpressionRecorded{},
-        };
-
-        if (type == "EXPR") {
-            if (f.size() < p + 2) throw std::runtime_error("malformed EXPR record at line " + std::to_string(line_no));
-            record.payload = EventExpressionRecorded{
-                .id = number<std::uint64_t>(f[p]),
-                .timestamp = record.recorded_at,
-                .text = hex_decode(f[p + 1]),
-            };
-        } else if (type == "INT_DERIVED") {
-            if (f.size() < p + 8) throw std::runtime_error("malformed INT_DERIVED record at line " + std::to_string(line_no));
-            record.payload = EventIntentionDerived{
-                .id = number<std::uint64_t>(f[p]),
-                .expression_id = number<std::uint64_t>(f[p + 1]),
-                .subject = hex_decode(f[p + 2]),
-                .window_start = time_from_epoch(f[p + 3]),
-                .window_end = time_from_epoch(f[p + 4]),
-                .precision = hex_decode(f[p + 5]),
-                .authority = hex_decode(f[p + 6]),
-                .interpretation_source = hex_decode(f[p + 7]),
-            };
-        } else if (type == "INT_STATUS") {
-            if (f.size() < p + 3) throw std::runtime_error("malformed INT_STATUS record at line " + std::to_string(line_no));
-            const auto st = intention_status_from_string(f[p + 1]);
-            if (!st) throw std::runtime_error("invalid intention status in ledger at line " + std::to_string(line_no) + ": " + f[p + 1]);
-            record.payload = EventIntentionStatusChanged{
-                .intention_id = number<std::uint64_t>(f[p]),
-                .new_status = *st,
-                .reason = hex_decode(f[p + 2]),
-                .at = record.recorded_at,
-            };
-        } else if (type == "INT_DEFERRED") {
-            if (f.size() < p + 5) throw std::runtime_error("malformed INT_DEFERRED record at line " + std::to_string(line_no));
-            record.payload = EventIntentionDeferred{
-                .intention_id = number<std::uint64_t>(f[p]),
-                .new_start = time_from_epoch(f[p + 1]),
-                .new_end = time_from_epoch(f[p + 2]),
-                .precision = hex_decode(f[p + 3]),
-                .reason = hex_decode(f[p + 4]),
-                .at = record.recorded_at,
-            };
-        } else if (type == "INTERACTION") {
-            if (f.size() < p + 6) throw std::runtime_error("malformed INTERACTION record at line " + std::to_string(line_no));
-            record.payload = EventInteractionRecorded{
-                .id = number<std::uint64_t>(f[p]),
-                .intention_id = number<std::uint64_t>(f[p + 1]),
-                .timestamp = record.recorded_at,
-                .message = hex_decode(f[p + 2]),
-                .reason = hex_decode(f[p + 3]),
-                .decision = hex_decode(f[p + 4]),
-                .formulation_source = hex_decode(f[p + 5]),
-            };
-        } else if (type == "PLAN_PROP") {
-            if (f.size() < p + 6) throw std::runtime_error("malformed PLAN_PROP record at line " + std::to_string(line_no));
-            record.payload = EventPlanProposed{
-                .id = number<std::uint64_t>(f[p]),
-                .created_at = record.recorded_at,
-                .horizon = hex_decode(f[p + 1]),
-                .summary = hex_decode(f[p + 2]),
-                .blocks = decode_blocks(hex_decode(f[p + 3])),
-                .points_of_attention = decode_strings(hex_decode(f[p + 4])),
-                .status = f[p + 5],
-                .source = f.size() >= p + 7 ? hex_decode(f[p + 6]) : "",
-            };
-        } else if (type == "PLAN_APPL") {
-            if (f.size() < p + 2) throw std::runtime_error("malformed PLAN_APPL record at line " + std::to_string(line_no));
-            record.payload = EventPlanApplied{
-                .plan_id = number<std::uint64_t>(f[p]),
-                .applied_at = record.recorded_at,
-                .reason = hex_decode(f[p + 1]),
-            };
-        } else if (type == "PLAN_DISC") {
-            if (f.size() < p + 2) throw std::runtime_error("malformed PLAN_DISC record at line " + std::to_string(line_no));
-            record.payload = EventPlanDiscarded{
-                .plan_id = number<std::uint64_t>(f[p]),
-                .discarded_at = record.recorded_at,
-                .reason = hex_decode(f[p + 1]),
-            };
-        } else if (type == "AUTO_CREATE") {
-            if (f.size() < p + 7) throw std::runtime_error("malformed AUTO_CREATE record at line " + std::to_string(line_no));
-            record.payload = EventAutomationCreated{
-                .id = number<std::uint64_t>(f[p]),
-                .created_at = record.recorded_at,
-                .title = hex_decode(f[p + 1]),
-                .trigger_when = hex_decode(f[p + 2]),
-                .condition_if = hex_decode(f[p + 3]),
-                .action_then = hex_decode(f[p + 4]),
-                .authority = hex_decode(f[p + 5]),
-                .status = f[p + 6],
-            };
-        } else if (type == "AUTO_STATUS") {
-            if (f.size() < p + 3) throw std::runtime_error("malformed AUTO_STATUS record at line " + std::to_string(line_no));
-            record.payload = EventAutomationStatusChanged{
-                .automation_id = number<std::uint64_t>(f[p]),
-                .new_status = f[p + 1],
-                .reason = hex_decode(f[p + 2]),
-                .at = record.recorded_at,
-            };
-        } else if (type == "AUTO_TRIG") {
-            if (f.size() < p + 2) throw std::runtime_error("malformed AUTO_TRIG record at line " + std::to_string(line_no));
-            record.payload = EventAutomationTriggered{
-                .automation_id = number<std::uint64_t>(f[p]),
-                .triggered_at = record.recorded_at,
-                .explanation = hex_decode(f[p + 1]),
-            };
-        } else if (type == "NOTIF_EMIT") {
-            if (f.size() < p + 6) throw std::runtime_error("malformed NOTIF_EMIT record at line " + std::to_string(line_no));
-            std::optional<std::uint64_t> ref_id;
-            if (f[p + 5] != "-") ref_id = number<std::uint64_t>(f[p + 5]);
-            record.payload = EventNotificationEmitted{
-                .id = number<std::uint64_t>(f[p]),
-                .automation_id = number<std::uint64_t>(f[p + 1]),
-                .emitted_at = record.recorded_at,
-                .title = hex_decode(f[p + 2]),
-                .message = hex_decode(f[p + 3]),
-                .action_type = hex_decode(f[p + 4]),
-                .reference_id = ref_id,
-            };
-        } else {
-            throw std::runtime_error("unknown event type in ledger record at line " + std::to_string(line_no) + ": " + type);
-        }
-        records.push_back(std::move(record));
+            .recorded_at = parse_time(time_str ? time_str : "").value_or(TimePoint{}),
+            .authority = auth_str ? auth_str : "core",
+            .epistemic_class = *epistemic_opt,
+            .payload = std::move(payload),
+        });
     }
+
+    sqlite3_finalize(stmt);
     return records;
 }
 
 State Ledger::project_state() const {
-    State state;
     const auto records = read_all();
+    State state;
     std::uint64_t max_id = 0;
 
     for (const auto& record : records) {
@@ -679,8 +874,6 @@ State Ledger::project_state() const {
                     .status = IntentionStatus::open,
                     .last_interaction_at = std::nullopt,
                     .epistemic_class = record.epistemic_class,
-                    .allocated_plan_start = std::nullopt,
-                    .allocated_plan_end = std::nullopt,
                 });
             } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
                 auto it = std::find_if(state.intentions.begin(), state.intentions.end(),

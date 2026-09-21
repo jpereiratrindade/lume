@@ -125,7 +125,7 @@ STATE=/tmp/lume-demo.ledger
 ./build/lume --state "$STATE" inspect
 ```
 
-A persistência do Lume opera sobre um **Event Ledger append-only** com validação estrita (`LUME-HARDENING-001`), locks reentrantes thread-safe, separação entre autoridade e classes epistêmicas ([LUME-BOOTSTRAP-001](docs/spec/LUME-BOOTSTRAP-001.md)), detecção de planos obsoletos e projeção factual em três profundidades ([LUME-EXPERIENCE-001](docs/spec/LUME-EXPERIENCE-001.md)).
+A persistência do Lume opera sobre um **Event Ledger em SQLite com WAL (Write-Ahead Logging)** com validação estrita (`LUME-HARDENING-001`), transações ACID, locks reentrantes thread-safe, separação entre autoridade e classes epistêmicas ([LUME-BOOTSTRAP-001](docs/spec/LUME-BOOTSTRAP-001.md)), detecção de planos obsoletos e projeção factual em três profundidades ([LUME-EXPERIENCE-001](docs/spec/LUME-EXPERIENCE-001.md)).
 
 Para executar o monitoramento residente do relógio e disparos de automações:
 
