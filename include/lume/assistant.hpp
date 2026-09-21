@@ -19,6 +19,7 @@ public:
     Outcome reply(std::string_view response, TimePoint now);
     [[nodiscard]] std::string explain_last() const;
     [[nodiscard]] std::string inspect() const;
+    [[nodiscard]] std::string language_name() const;
 
 private:
     Store store_;

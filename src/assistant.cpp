@@ -83,7 +83,8 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
 
     // Language proposes. The core accepts only a known, complete, sufficiently confident shape.
     if (candidate.kind == "intention" && candidate.confidence >= 0.5 && !candidate.subject.empty() &&
-        candidate.temporal.date_reference == "tomorrow" && candidate.temporal.period == "morning") {
+        candidate.temporal.date_reference == "tomorrow" && candidate.temporal.period == "morning" &&
+        candidate.precision == "date+period") {
         const auto [start, end] = tomorrow_morning(now);
         state.intentions.push_back(Intention{
             .id = state.next_id++,
@@ -93,12 +94,15 @@ Outcome Assistant::say(std::string_view expression, TimePoint now) {
             .window_end = end,
             .precision = candidate.precision,
             .authority = "user",
-            .interpretation_source = language_->name(),
+            .interpretation_source = candidate.source.empty() ? language_->name() : candidate.source,
             .status = IntentionStatus::open,
             .last_interaction_at = std::nullopt,
         });
         store_.save(state);
-        return {"REMEMBERED", language_->formulate({"REMEMBER_MORNING", candidate.subject, {}}),
+        auto formulation = language_->formulate({"REMEMBER_MORNING", candidate.subject, {}});
+        if (formulation.text.empty()) formulation = DeterministicLanguage{}.formulate(
+            {"REMEMBER_MORNING", candidate.subject, {}});
+        return {"REMEMBERED", formulation.text,
                 "a expressão contém uma intenção e uma janela temporal parcial", true};
     }
 
@@ -119,24 +123,23 @@ Outcome Assistant::observe(TimePoint now) {
 
     const auto reason = "você disse que queria " + candidate->subject +
                         "; a janela declarada está ativa e a intenção continua aberta";
-    auto message = language_->formulate({"SUGGEST", candidate->subject, reason});
-    auto formulation_source = language_->name();
-    if (message.empty()) {
-        message = "Você deixou uma intenção aberta para este período: " + candidate->subject + ".";
-        formulation_source = "core-fallback";
+    auto formulation = language_->formulate({"SUGGEST", candidate->subject, reason});
+    if (formulation.text.empty()) {
+        formulation.text = "Você deixou uma intenção aberta para este período: " + candidate->subject + ".";
+        formulation.source = "core-fallback";
     }
     candidate->last_interaction_at = now;
     state.interactions.push_back(Interaction{
         .id = state.next_id++,
         .intention_id = candidate->id,
         .created_at = now,
-        .message = message,
+        .message = formulation.text,
         .reason = reason,
         .decision = "INTERACT",
-        .formulation_source = formulation_source,
+        .formulation_source = formulation.source,
     });
     store_.save(state);
-    return {"INTERACT", message, reason, true};
+    return {"INTERACT", formulation.text, reason, true};
 }
 
 Outcome Assistant::reply(std::string_view response, TimePoint now) {
@@ -207,6 +210,8 @@ std::string Assistant::explain_last() const {
     if (state.interactions.empty()) return "Ainda não houve uma interação proativa para explicar.";
     return "Eu falei porque " + state.interactions.back().reason + ".";
 }
+
+std::string Assistant::language_name() const { return language_->name(); }
 
 std::string Assistant::inspect() const {
     const auto state = store_.load();

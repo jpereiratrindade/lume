@@ -45,6 +45,7 @@ void print_help() {
         << "  lume observe               observa o momento e pode ficar em silêncio\n"
         << "  lume reply <resposta>      responde à última interação\n"
         << "  lume why                   explica a última interação\n"
+        << "  lume doctor                mostra o provedor linguístico ativo\n"
         << "  lume inspect               mostra fatos, intenções e proveniência\n"
         << "  lume                       inicia uma conversa\n\n"
         << "Opções: --at AAAA-MM-DDTHH:MM[:SS], --state CAMINHO, --explain\n";
@@ -110,7 +111,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        lume::Assistant assistant{lume::Store{state_path}};
+        lume::Assistant assistant{lume::Store{state_path}, lume::make_configured_language()};
         if (positional.empty()) {
             conversation(assistant);
             return 0;
@@ -119,6 +120,10 @@ int main(int argc, char** argv) {
         const auto& command = positional.front();
         if (command == "inspect") std::cout << assistant.inspect();
         else if (command == "why") std::cout << assistant.explain_last() << '\n';
+        else if (command == "doctor") {
+            std::cout << "Provedor linguístico: " << assistant.language_name() << '\n'
+                      << "Estado: " << state_path << '\n';
+        }
         else if (command == "observe") print_outcome(assistant.observe(moment), explain);
         else if (command == "say") print_outcome(assistant.say(join(positional, 1), moment), explain);
         else if (command == "reply") print_outcome(assistant.reply(join(positional, 1), moment), explain);
@@ -129,4 +134,3 @@ int main(int argc, char** argv) {
         return 1;
     }
 }
-

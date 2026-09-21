@@ -13,14 +13,16 @@ O princípio arquitetural central é:
 
 Um provedor de linguagem só pode devolver candidatos e formular texto. O core
 valida o candidato, resolve referências temporais, registra autoridade e
-proveniência e é o único componente que altera o estado canônico. Nesta primeira
-versão existe um provedor determinístico pequeno. A interface `LanguageProvider`
-é o ponto de encaixe para um modelo local via `llama.cpp`; o fallback continua
-funcionando caso esse modelo não exista, falhe ou devolva uma proposta inválida.
+proveniência e é o único componente que altera o estado canônico. A integração
+HTTP OpenAI-compatible usa um Ollama ou `llama-server` local quando disponível.
+O fallback determinístico continua funcionando caso o servidor não exista, falhe
+ou devolva uma proposta inválida.
 
 ## Executar
 
-Requer CMake 3.25+ e um compilador com modo C++26.
+Requer CMake 3.25+ e um compilador com modo C++26. A integração local é compilada
+quando `libcurl` e `nlohmann/json.hpp` estão disponíveis; use
+`-DLUME_WITH_LOCAL_LLM=OFF` para um build sem essas dependências.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -32,6 +34,56 @@ Uma conversa interativa começa com:
 
 ```bash
 ./build/lume
+```
+
+Para ver qual camada linguística foi selecionada:
+
+```bash
+./build/lume doctor
+```
+
+Para instalar o serviço Ollama isolado do Lume e preparar o modelo recomendado:
+
+```bash
+./scripts/setup-local-llm.sh
+./build/lume doctor
+```
+
+O script usa `qwen2.5:3b` por padrão. Para escolher outro modelo já compatível:
+
+```bash
+LUME_SETUP_MODEL=qwen2.5:7b ./scripts/setup-local-llm.sh
+```
+
+Em CPU, a primeira interação também carrega o modelo e pode levar dezenas de
+segundos; as seguintes reutilizam o processo aquecido. Se o prazo configurado for
+excedido, o Lume responde pelo fallback sem perder a expressão original.
+
+Por padrão o Lume procura primeiro seu serviço dedicado em
+`http://127.0.0.1:11435/v1` e depois o Ollama convencional em
+`http://127.0.0.1:11434/v1`. Ele descobre o primeiro modelo por `/v1/models` e
+mantém todo o tráfego em loopback. Para `llama-server` ou outra configuração local:
+
+```bash
+export LUME_LLM_URL=http://127.0.0.1:8080/v1
+export LUME_LLM_MODEL=meu-modelo-local
+export LUME_LLM_TIMEOUT_MS=60000
+```
+
+`LUME_LLM=off` força o fallback. URLs que não sejam loopback são rejeitadas para
+que contexto pessoal não saia da máquina por configuração acidental.
+
+Em máquinas onde a detecção automática de GPU do Ollama falha, o projeto inclui
+duas opções em `contrib/ollama`: um serviço de usuário isolado na porta 11435 e um
+drop-in para corrigir o serviço global. Essas são configurações da máquina, não
+exigências do runtime.
+
+Para remover somente o serviço dedicado:
+
+```bash
+systemctl --user disable --now lume-ollama.service
+rm ~/.config/systemd/user/lume-ollama.service
+systemctl --user daemon-reload
 ```
 
 O ciclo completo também pode ser observado deterministicamente pela CLI:
@@ -58,9 +110,8 @@ experimentos.
 ## Limites honestos desta versão
 
 O fallback reconhece intencionalmente apenas a construção “amanhã de manhã quero
-…”. Expressões fora dessa gramática são preservadas literalmente, mas não viram
-uma intenção acionável. Isso mantém incompletude como estado válido e evita
-simular compreensão. O próximo incremento natural é um adaptador local de
-`llama.cpp` que implemente o mesmo contrato, com schema estrito, timeout e retorno
-automático ao fallback.
-
+…”. O modelo local entende variações linguísticas, mas o core ainda aceita apenas
+a semântica temporal implementada (`tomorrow` + `morning`). Expressões fora desse
+contrato são preservadas literalmente, sem simular compreensão. O cliente usa
+schema fechado, timeout, circuit breaker por processo e retorno automático ao
+fallback.

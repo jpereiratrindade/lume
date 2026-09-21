@@ -63,6 +63,7 @@ InterpretationCandidate DeterministicLanguage::interpret(const InterpretationReq
             .precision = "date+period",
             .confidence = 1.0,
             .ambiguities = {},
+            .source = name(),
         };
     }
     return {
@@ -72,17 +73,18 @@ InterpretationCandidate DeterministicLanguage::interpret(const InterpretationReq
         .precision = {},
         .confidence = 1.0,
         .ambiguities = {"unsupported_temporal_or_referential_expression"},
+        .source = name(),
     };
 }
 
-std::string DeterministicLanguage::formulate(const FormulationRequest& request) {
+FormulationResult DeterministicLanguage::formulate(const FormulationRequest& request) {
     if (request.decision == "SUGGEST") {
-        return "Você queria " + request.subject + ". Ainda faz sentido?";
+        return {"Você queria " + request.subject + ". Ainda faz sentido?", name()};
     }
     if (request.decision == "REMEMBER_MORNING") {
-        return "Certo. Amanhã de manhã eu trago isso de volta.";
+        return {"Certo. Amanhã de manhã eu trago isso de volta.", name()};
     }
-    return {};
+    return {{}, name()};
 }
 
 std::string DeterministicLanguage::name() const { return "deterministic-fallback"; }
@@ -90,5 +92,11 @@ std::string DeterministicLanguage::name() const { return "deterministic-fallback
 std::unique_ptr<LanguageProvider> make_deterministic_language() {
     return std::make_unique<DeterministicLanguage>();
 }
+
+#ifndef LUME_HAS_LOCAL_LLM
+std::unique_ptr<LanguageProvider> make_configured_language() {
+    return make_deterministic_language();
+}
+#endif
 
 }  // namespace lume

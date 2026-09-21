@@ -25,12 +25,33 @@ public:
     lume::InterpretationCandidate interpret(const lume::InterpretationRequest&) override {
         return {.kind = "delete_all_state", .subject = "everything", .confidence = 1.0};
     }
-    std::string formulate(const lume::FormulationRequest&) override { return "unsafe"; }
+    lume::FormulationResult formulate(const lume::FormulationRequest&) override {
+        return {"unsafe", name()};
+    }
     std::string name() const override { return "untrusted-test-model"; }
 };
 
+class ContradictoryLanguage final : public lume::LanguageProvider {
+public:
+    lume::InterpretationCandidate interpret(const lume::InterpretationRequest&) override {
+        return {
+            .kind = "intention",
+            .subject = "retomar o artigo",
+            .temporal = {.date_reference = "tomorrow", .period = "morning"},
+            .precision = "intentionally-unspecified",
+            .confidence = 1.0,
+            .ambiguities = {},
+            .source = name(),
+        };
+    }
+    lume::FormulationResult formulate(const lume::FormulationRequest&) override {
+        return {"unsafe", name()};
+    }
+    std::string name() const override { return "contradictory-test-model"; }
+};
+
 void lifecycle_test(const std::filesystem::path& path) {
-    lume::Assistant assistant{lume::Store{path}};
+    lume::Assistant assistant{lume::Store{path}, lume::make_deterministic_language()};
     const auto first = assistant.say("Amanhã de manhã quero trabalhar no artigo.",
                                      at("2026-09-21T18:00:00"));
     expect(first.decision == "REMEMBERED", "expression should be remembered");
@@ -79,6 +100,14 @@ void authority_boundary_test(const std::filesystem::path& path) {
     expect(state.intentions.empty(), "unknown model proposal must not mutate canonical intentions");
 }
 
+void semantic_validation_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Store{path}, std::make_unique<ContradictoryLanguage>()};
+    assistant.say("Amanhã cedo quero retomar o artigo", at("2026-09-21T18:00:00"));
+    const auto state = lume::Store{path}.load();
+    expect(state.expressions.size() == 1, "contradictory expression must remain factual");
+    expect(state.intentions.empty(), "core must reject contradictory candidate precision");
+}
+
 }  // namespace
 
 int main() {
@@ -90,6 +119,7 @@ int main() {
     try {
         lifecycle_test(base / "lifecycle.state");
         authority_boundary_test(base / "authority.state");
+        semantic_validation_test(base / "semantic-validation.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;
@@ -99,4 +129,3 @@ int main() {
         return 1;
     }
 }
-

@@ -29,6 +29,7 @@ struct InterpretationCandidate {
     std::string precision;
     double confidence{};
     std::vector<std::string> ambiguities;
+    std::string source;
 };
 
 struct FormulationRequest {
@@ -37,11 +38,16 @@ struct FormulationRequest {
     std::string reason;
 };
 
+struct FormulationResult {
+    std::string text;
+    std::string source;
+};
+
 class LanguageProvider {
 public:
     virtual ~LanguageProvider() = default;
     [[nodiscard]] virtual InterpretationCandidate interpret(const InterpretationRequest& request) = 0;
-    [[nodiscard]] virtual std::string formulate(const FormulationRequest& request) = 0;
+    [[nodiscard]] virtual FormulationResult formulate(const FormulationRequest& request) = 0;
     [[nodiscard]] virtual std::string name() const = 0;
 };
 
@@ -49,12 +55,14 @@ public:
 class DeterministicLanguage final : public LanguageProvider {
 public:
     [[nodiscard]] InterpretationCandidate interpret(const InterpretationRequest& request) override;
-    [[nodiscard]] std::string formulate(const FormulationRequest& request) override;
+    [[nodiscard]] FormulationResult formulate(const FormulationRequest& request) override;
     [[nodiscard]] std::string name() const override;
 };
 
 std::unique_ptr<LanguageProvider> make_deterministic_language();
+// Selects a configured local OpenAI-compatible server (Ollama or llama-server)
+// when the optional HTTP integration is available, otherwise the deterministic provider.
+std::unique_ptr<LanguageProvider> make_configured_language();
 std::string fold_portuguese(std::string_view input);
 
 }  // namespace lume
-
