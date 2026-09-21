@@ -115,6 +115,16 @@ void print_outcome(const lume::Outcome& outcome, bool explain, bool json) {
             std::cout << "]";
         }
 
+        if (outcome.attention_candidate) {
+            const auto& att = *outcome.attention_candidate;
+            std::cout << ",\"attention_candidate\":{\"intention_id\":" << att.intention_id
+                      << ",\"subject\":\"" << json_escape(att.subject) << "\""
+                      << ",\"window_start\":\"" << json_escape(lume::format_time(att.window_start)) << "\""
+                      << ",\"window_end\":\"" << json_escape(lume::format_time(att.window_end)) << "\""
+                      << ",\"relevance_reason\":\"" << json_escape(att.relevance_reason) << "\""
+                      << ",\"is_active_now\":" << (att.is_active_now ? "true" : "false") << "}";
+        }
+
         std::cout << "}\n";
         return;
     }
@@ -244,7 +254,7 @@ int main(int argc, char** argv) {
         }
         const auto moment = specified_time.value_or(now());
         const auto& command = positional.front();
-        if (command == "inspect") std::cout << assistant.inspect();
+        if (command == "inspect") std::cout << assistant.inspect(moment);
         else if (command == "why") std::cout << assistant.explain_last() << '\n';
         else if (command == "doctor") {
             std::cout << "Provedor linguístico: " << assistant.language_name() << '\n'

@@ -247,12 +247,77 @@ void orchestration_plan_lifecycle_test(const std::filesystem::path& path) {
 
     auto state_after = ledger.project_state();
     expect(state_after.plan_proposals.front().status == "applied", "plan status must update to applied");
-    expect(state_after.intentions.front().precision == "plan_slot",
-           "intention must be bound to plan slot");
+    expect(state_after.intentions.front().allocated_plan_start.has_value(),
+           "intention must have allocated plan slot");
+    expect(state_after.intentions.front().precision == "date+period",
+           "intention original declared precision must be preserved");
 
     // Test terminal state: cannot apply again
     const auto reapply = assistant.apply_plan(plan_id, at("2026-09-21T18:07:00"));
     expect(reapply.decision == "ALREADY_APPLIED", "cannot reapply applied terminal plan");
+}
+
+void plan_stale_detection_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero escrever documentação.", at("2026-09-21T18:00:00"));
+    const auto plan_outcome = assistant.say("Organiza minha manhã", at("2026-09-21T18:05:00"));
+    expect(plan_outcome.decision == "PLAN_PROPOSED", "plan proposed");
+    const auto plan_id = plan_outcome.plan_proposal->id;
+
+    // Simulate intention completion / change before applying plan
+    assistant.observe(at("2026-09-22T08:00:00"));
+    assistant.reply("já resolvi", at("2026-09-22T08:01:00"));
+
+    // Attempting to apply stale plan must return PLAN_STALE
+    const auto stale_apply = assistant.apply_plan(plan_id, at("2026-09-22T08:05:00"));
+    expect(stale_apply.decision == "PLAN_STALE", "applying stale plan must return PLAN_STALE");
+}
+
+void attention_candidate_factual_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero trabalhar no artigo.", at("2026-09-21T18:00:00"));
+
+    // Outside window (e.g. today at 18:00) -> nullopt
+    auto att_outside = assistant.compute_attention_candidate(at("2026-09-21T18:05:00"));
+    expect(!att_outside.has_value(), "must not claim attention when window is not active");
+
+    // Inside window tomorrow morning (e.g. tomorrow at 09:00) -> active
+    auto att_inside = assistant.compute_attention_candidate(at("2026-09-22T09:00:00"));
+    expect(att_inside.has_value(), "must identify active attention candidate inside window");
+    expect(att_inside->is_active_now == true, "candidate must be marked active now");
+    expect(att_inside->subject == "trabalhar no artigo", "candidate subject must match");
+}
+
+void malformed_ledger_reject_test(const std::filesystem::path& path) {
+    // Write a corrupted ledger file with truncated fields
+    std::ofstream out(path);
+    out << "LUME-LEDGER\t1\n";
+    out << "1\t2026-09-21T18:00:00Z\tUNKNOWN_EVENT_TYPE\tuser\n"; // Unknown event type
+    out.close();
+
+    lume::Ledger ledger{path};
+    bool caught = false;
+    try {
+        static_cast<void>(ledger.read_all());
+    } catch (const std::exception&) {
+        caught = true;
+    }
+    expect(caught, "malformed event type must be strictly rejected");
+}
+
+void epistemic_class_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    assistant.say("Amanhã de manhã quero estudar Rust.", at("2026-09-21T18:00:00"));
+    const auto records = ledger.read_all();
+    expect(records.size() >= 2, "must have recorded expression and derived intention");
+    expect(records[0].epistemic_class == lume::EpistemicClass::user_declared, "expression is user_declared");
+    expect(records[1].epistemic_class == lume::EpistemicClass::derived, "derived intention is derived");
 }
 
 void automation_creation_and_status_toggle_test(const std::filesystem::path& path) {
@@ -366,6 +431,10 @@ int main() {
         legacy_migration_test(base / "legacy.state");
         monotonic_sequence_test(base / "sequence.state");
         orchestration_plan_lifecycle_test(base / "orchestration.state");
+        plan_stale_detection_test(base / "stale-plan.state");
+        attention_candidate_factual_test(base / "attention.state");
+        malformed_ledger_reject_test(base / "malformed.state");
+        epistemic_class_test(base / "epistemic.state");
         automation_creation_and_status_toggle_test(base / "auto-toggle.state");
         tick_evaluation_morning_plan_test(base / "auto-tick-morning.state");
         tick_evaluation_no_duplicate_triggers_test(base / "auto-tick-dedup.state");

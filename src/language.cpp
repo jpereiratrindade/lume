@@ -134,8 +134,8 @@ PlanProposalCandidate DeterministicLanguage::propose_plan(const PlanRequest& req
 
     auto current_slot = base_slot;
     for (const auto& item : request.open_intentions) {
-        // Use intention's window_start if in the future, otherwise use sequential slot
-        auto block_start = (item.window_start > ref) ? item.window_start : current_slot;
+        // Ensure strictly non-overlapping slots: start at intention's declared start or current available slot
+        auto block_start = (item.window_start > current_slot) ? item.window_start : current_slot;
         auto block_end = block_start + std::chrono::hours{2};
 
         candidate.blocks.push_back(PlanBlock{

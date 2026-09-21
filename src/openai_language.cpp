@@ -269,9 +269,8 @@ public:
     }
 
     PlanProposalCandidate propose_plan(const PlanRequest& request) override {
-        // Core validation will enforce schema, for now leverage deterministic plan builder
         auto plan = deterministic_.propose_plan(request);
-        plan.source = source_name();
+        plan.source = "deterministic-planner";
         return plan;
     }
 

@@ -90,6 +90,26 @@ std::optional<IntentionStatus> intention_status_from_string(const std::string& v
     return std::nullopt;
 }
 
+std::string to_string(EpistemicClass epistemic) {
+    switch (epistemic) {
+        case EpistemicClass::user_declared: return "user_declared";
+        case EpistemicClass::derived: return "derived";
+        case EpistemicClass::observed: return "observed";
+        case EpistemicClass::proposed: return "proposed";
+        case EpistemicClass::policy_defined: return "policy_defined";
+    }
+    throw std::runtime_error("unknown epistemic class");
+}
+
+std::optional<EpistemicClass> epistemic_class_from_string(const std::string& value) {
+    if (value == "user_declared") return EpistemicClass::user_declared;
+    if (value == "derived") return EpistemicClass::derived;
+    if (value == "observed") return EpistemicClass::observed;
+    if (value == "proposed") return EpistemicClass::proposed;
+    if (value == "policy_defined") return EpistemicClass::policy_defined;
+    return std::nullopt;
+}
+
 std::string format_time(TimePoint time) {
     const std::time_t raw = Clock::to_time_t(time);
     std::tm local{};

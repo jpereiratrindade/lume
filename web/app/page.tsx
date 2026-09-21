@@ -45,9 +45,19 @@ type Intention = {
   last_interaction_at: string | null;
 };
 
+type AttentionCandidate = {
+  intention_id: number;
+  subject: string;
+  window_start: string;
+  window_end: string;
+  relevance_reason: string;
+  is_active_now: boolean;
+};
+
 type LumeState = {
   state_version?: number;
   ledger_events_count?: number;
+  attention_candidate?: AttentionCandidate | null;
   intentions: Intention[];
   interactions: Array<{
     id: number;
@@ -150,6 +160,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("presence");
   const [messages, setMessages] = useState<Message[]>([]);
   const [intentions, setIntentions] = useState<Intention[]>([]);
+  const [attentionCandidate, setAttentionCandidate] = useState<AttentionCandidate | null>(null);
   const [automations, setAutomations] = useState<AutomationProposal[]>([]);
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [ledgerEventsCount, setLedgerEventsCount] = useState<number>(0);
@@ -174,6 +185,7 @@ export default function Home() {
       if (response.ok) {
         const state = (await response.json()) as LumeState;
         setIntentions(state.intentions ?? []);
+        setAttentionCandidate(state.attention_candidate ?? null);
         if (typeof state.ledger_events_count === "number") {
           setLedgerEventsCount(state.ledger_events_count);
         }
@@ -604,10 +616,7 @@ export default function Home() {
             <button
               className={`depth-link ${viewMode === "plan" ? "is-active" : ""}`}
               type="button"
-              onClick={() => {
-                setViewMode("plan");
-                if (!activePlan) void triggerPlan("week");
-              }}
+              onClick={() => setViewMode("plan")}
             >
               Planejar
             </button>
@@ -646,15 +655,20 @@ export default function Home() {
               <h1 id="greeting">{welcome}</h1>
               <p className="opening">O que está acontecendo agora?</p>
 
-              {nextRelevantIntention ? (
+              {attentionCandidate && attentionCandidate.is_active_now ? (
                 <div className="presence-insight">
-                  <p className="insight-lead">Há uma coisa que merece tua atenção:</p>
+                  <p className="insight-lead">Há uma coisa que merece tua atenção agora:</p>
                   <p className="insight-highlight">
-                    <strong>{nextRelevantIntention.subject}</strong> — {shortWindow(nextRelevantIntention.window_start)}
+                    <strong>{attentionCandidate.subject}</strong> — {shortWindow(attentionCandidate.window_start)}
                   </p>
+                  {attentionCandidate.relevance_reason && (
+                    <p className="insight-reason" style={{ fontSize: "0.85rem", opacity: 0.8, marginTop: "0.35rem" }}>
+                      {attentionCandidate.relevance_reason}
+                    </p>
+                  )}
                 </div>
               ) : (
-                <p className="presence-calm">Está tudo tranquilo por enquanto. Nenhuma intenção pendente de ação imediata.</p>
+                <p className="presence-calm">Está tudo tranquilo por enquanto. Nenhuma intenção declarada requer atenção imediata.</p>
               )}
             </div>
 
@@ -792,7 +806,7 @@ export default function Home() {
                         disabled={processing}
                         onClick={() => handleApplyPlan(activePlan.id)}
                       >
-                        Aplicar proposta ao Ledger
+                        Usar este plano
                       </button>
                       <button
                         type="button"
@@ -1099,7 +1113,7 @@ export default function Home() {
         </div>
         <div className="footer-right">
           <span className={`runtime-indicator ${connection}`}>
-            {connection === "local" ? "● Runtime local C++ ativo" : "○ Modo prévia local"}
+            {connection === "local" ? "● LOCAL E PRESENTE" : "○ Modo prévia local"}
           </span>
         </div>
       </footer>

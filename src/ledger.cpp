@@ -4,6 +4,7 @@
 #include <charconv>
 #include <fcntl.h>
 #include <fstream>
+#include <condition_variable>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -11,6 +12,7 @@
 #include <string_view>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 
@@ -19,11 +21,20 @@ namespace {
 
 struct LockInfo {
     int fd{-1};
-    int count{0};
+    std::thread::id owner_thread{};
+    int recursion_count{0};
+    int waiters{0};
 };
 
 std::mutex g_lock_mutex;
+std::condition_variable g_lock_cv;
 std::unordered_map<std::string, LockInfo> g_locks;
+
+void secure_directory(const std::filesystem::path& dir) {
+    if (dir.empty()) return;
+    std::filesystem::create_directories(dir);
+    chmod(dir.c_str(), S_IRWXU); // 0700
+}
 
 std::string hex_encode(std::string_view input) {
     constexpr char digits[] = "0123456789abcdef";
@@ -119,6 +130,8 @@ std::vector<PlanBlock> decode_blocks(const std::string& encoded) {
                 .category = hex_decode(cat_hex),
                 .intention_id = number<std::uint64_t>(int_id_str),
             });
+        } else {
+            throw std::runtime_error("malformed plan block encoding in ledger");
         }
     }
     return blocks;
@@ -149,39 +162,62 @@ std::vector<std::string> decode_strings(const std::string& encoded) {
 FileLockGuard::FileLockGuard(std::string lock_path) : lock_path_(std::move(lock_path)) {
     if (lock_path_.empty()) return;
 
+    const auto this_thread = std::this_thread::get_id();
     std::unique_lock<std::mutex> guard(g_lock_mutex);
     auto& info = g_locks[lock_path_];
-    if (info.count == 0) {
-        int fd = open(lock_path_.c_str(), O_RDWR | O_CREAT, 0666);
+
+    info.waiters++;
+    g_lock_cv.wait(guard, [&]() {
+        return info.recursion_count == 0 || info.owner_thread == this_thread;
+    });
+    info.waiters--;
+
+    if (info.recursion_count == 0) {
+        info.owner_thread = this_thread;
+        int fd = open(lock_path_.c_str(), O_RDWR | O_CREAT, 0600);
         if (fd < 0) {
-            g_locks.erase(lock_path_);
+            if (info.waiters == 0) g_locks.erase(lock_path_);
+            g_lock_cv.notify_all();
             throw std::runtime_error("could not open lock file: " + lock_path_);
         }
+        chmod(lock_path_.c_str(), S_IRUSR | S_IWUSR); // 0600
         if (flock(fd, LOCK_EX) != 0) {
             close(fd);
-            g_locks.erase(lock_path_);
+            if (info.waiters == 0) g_locks.erase(lock_path_);
+            g_lock_cv.notify_all();
             throw std::runtime_error("could not acquire exclusive flock: " + lock_path_);
         }
         info.fd = fd;
     }
-    info.count++;
+    info.recursion_count++;
 }
 
-FileLockGuard::~FileLockGuard() {
+void FileLockGuard::release() noexcept {
     if (lock_path_.empty()) return;
 
     std::unique_lock<std::mutex> guard(g_lock_mutex);
     auto it = g_locks.find(lock_path_);
-    if (it != g_locks.end()) {
-        it->second.count--;
-        if (it->second.count <= 0) {
+    if (it != g_locks.end() && it->second.owner_thread == std::this_thread::get_id()) {
+        it->second.recursion_count--;
+        if (it->second.recursion_count <= 0) {
             if (it->second.fd >= 0) {
                 flock(it->second.fd, LOCK_UN);
                 close(it->second.fd);
+                it->second.fd = -1;
             }
-            g_locks.erase(it);
+            it->second.recursion_count = 0;
+            it->second.owner_thread = std::thread::id{};
+            if (it->second.waiters == 0) {
+                g_locks.erase(it);
+            }
+            g_lock_cv.notify_all();
         }
     }
+    lock_path_.clear();
+}
+
+FileLockGuard::~FileLockGuard() {
+    release();
 }
 
 FileLockGuard::FileLockGuard(FileLockGuard&& other) noexcept : lock_path_(std::move(other.lock_path_)) {
@@ -190,7 +226,7 @@ FileLockGuard::FileLockGuard(FileLockGuard&& other) noexcept : lock_path_(std::m
 
 FileLockGuard& FileLockGuard::operator=(FileLockGuard&& other) noexcept {
     if (this != &other) {
-        this->~FileLockGuard();
+        release();
         lock_path_ = std::move(other.lock_path_);
         other.lock_path_.clear();
     }
@@ -202,7 +238,7 @@ Ledger::Ledger(std::filesystem::path path) : path_(std::move(path)) {}
 const std::filesystem::path& Ledger::path() const noexcept { return path_; }
 
 FileLockGuard Ledger::acquire_file_lock() const {
-    if (path_.has_parent_path()) std::filesystem::create_directories(path_.parent_path());
+    if (path_.has_parent_path()) secure_directory(path_.parent_path());
     const auto lock_file_path = std::filesystem::absolute(path_).string() + ".lock";
     return FileLockGuard(lock_file_path);
 }
@@ -228,6 +264,7 @@ bool Ledger::migrate_if_needed() const {
                 .sequence_number = seq++,
                 .recorded_at = time_from_epoch(f[2]),
                 .authority = "user",
+                .epistemic_class = EpistemicClass::user_declared,
                 .payload = EventExpressionRecorded{
                     .id = number<std::uint64_t>(f[1]),
                     .timestamp = time_from_epoch(f[2]),
@@ -240,6 +277,7 @@ bool Ledger::migrate_if_needed() const {
                 .sequence_number = seq++,
                 .recorded_at = time_from_epoch(f[4]),
                 .authority = hex_decode(f[8]),
+                .epistemic_class = EpistemicClass::derived,
                 .payload = EventIntentionDerived{
                     .id = number<std::uint64_t>(f[1]),
                     .expression_id = number<std::uint64_t>(f[2]),
@@ -256,6 +294,7 @@ bool Ledger::migrate_if_needed() const {
                     .sequence_number = seq++,
                     .recorded_at = time_from_epoch(f[4]),
                     .authority = "user",
+                    .epistemic_class = EpistemicClass::user_declared,
                     .payload = EventIntentionStatusChanged{
                         .intention_id = number<std::uint64_t>(f[1]),
                         .new_status = *status,
@@ -269,6 +308,7 @@ bool Ledger::migrate_if_needed() const {
                 .sequence_number = seq++,
                 .recorded_at = time_from_epoch(f[3]),
                 .authority = "core",
+                .epistemic_class = EpistemicClass::observed,
                 .payload = EventInteractionRecorded{
                     .id = number<std::uint64_t>(f[1]),
                     .intention_id = number<std::uint64_t>(f[2]),
@@ -286,17 +326,20 @@ bool Ledger::migrate_if_needed() const {
     // Create .bak backup
     const auto backup_path = path_.string() + ".bak";
     std::filesystem::copy_file(path_, backup_path, std::filesystem::copy_options::overwrite_existing);
+    chmod(backup_path.c_str(), S_IRUSR | S_IWUSR);
 
     // Atomic write to temporary file then rename
     const auto tmp_path = path_.string() + ".tmp";
     {
         std::ofstream output(tmp_path, std::ios::trunc);
         if (!output) throw std::runtime_error("could not open temporary file for migration: " + tmp_path);
+        chmod(tmp_path.c_str(), S_IRUSR | S_IWUSR);
         output << "LUME-LEDGER\t1\n";
         for (const auto& record : migrated_records) {
             output << record.sequence_number << '\t'
                    << epoch(record.recorded_at) << '\t'
-                   << hex_encode(record.authority) << '\t';
+                   << hex_encode(record.authority) << '\t'
+                   << hex_encode(to_string(record.epistemic_class)) << '\t';
             std::visit([&](const auto& event) {
                 using T = std::decay_t<decltype(event)>;
                 if constexpr (std::is_same_v<T, EventExpressionRecorded>) {
@@ -320,6 +363,7 @@ bool Ledger::migrate_if_needed() const {
         output.flush();
     }
     std::filesystem::rename(tmp_path, path_);
+    chmod(path_.c_str(), S_IRUSR | S_IWUSR);
     return true;
 }
 
@@ -339,23 +383,24 @@ void Ledger::append_batch(std::vector<EventRecord> records) {
 
         bool is_new_file = !std::filesystem::exists(path_) || std::filesystem::file_size(path_) == 0;
 
+        if (path_.has_parent_path()) secure_directory(path_.parent_path());
+
         std::ofstream output(path_, std::ios::app);
         if (!output) throw std::runtime_error("could not open ledger for writing: " + path_.string());
+        chmod(path_.c_str(), S_IRUSR | S_IWUSR);
 
         if (is_new_file) {
             output << "LUME-LEDGER\t1\n";
         }
 
         for (auto& record : records) {
-            if (record.sequence_number == 0) {
-                record.sequence_number = ++max_seq;
-            } else {
-                max_seq = std::max(max_seq, record.sequence_number);
-            }
+            // Sequence numbers are managed EXCLUSIVELY by Ledger
+            record.sequence_number = ++max_seq;
 
             output << record.sequence_number << '\t'
                    << epoch(record.recorded_at) << '\t'
-                   << hex_encode(record.authority) << '\t';
+                   << hex_encode(record.authority) << '\t'
+                   << hex_encode(to_string(record.epistemic_class)) << '\t';
 
             std::visit([&](const auto& event) {
                 using T = std::decay_t<decltype(event)>;
@@ -441,123 +486,163 @@ std::vector<EventRecord> Ledger::read_all() const {
 
     std::string line;
     std::size_t line_no = 1;
+    std::uint64_t last_seq = 0;
+
     while (std::getline(input, line)) {
         ++line_no;
         if (line.empty()) continue;
         const auto f = split_tabs(line);
         if (f.size() < 4) throw std::runtime_error("malformed ledger record at line " + std::to_string(line_no));
 
+        const auto seq = number<std::uint64_t>(f[0]);
+        if (seq <= last_seq) {
+            throw std::runtime_error("non-monotonic sequence number at line " + std::to_string(line_no) + ": " + std::to_string(seq) + " <= " + std::to_string(last_seq));
+        }
+        last_seq = seq;
+
+        // Detect 4-field or 5-field prefix (with epistemic class)
+        std::size_t type_idx = 3;
+        std::string authority = hex_decode(f[2]);
+        EpistemicClass epistemic = EpistemicClass::user_declared;
+
+        if (f.size() >= 5 && (f[4] == "EXPR" || f[4] == "INT_DERIVED" || f[4] == "INT_STATUS" ||
+                              f[4] == "INT_DEFERRED" || f[4] == "INTERACTION" || f[4] == "PLAN_PROP" ||
+                              f[4] == "PLAN_APPL" || f[4] == "PLAN_DISC" || f[4] == "AUTO_CREATE" ||
+                              f[4] == "AUTO_STATUS" || f[4] == "AUTO_TRIG" || f[4] == "NOTIF_EMIT")) {
+            type_idx = 4;
+            const auto ep_opt = epistemic_class_from_string(hex_decode(f[3]));
+            if (ep_opt) epistemic = *ep_opt;
+        }
+
+        const std::string& type = f[type_idx];
+        const std::size_t p = type_idx + 1; // first payload argument index
+
         EventRecord record{
-            .sequence_number = number<std::uint64_t>(f[0]),
+            .sequence_number = seq,
             .recorded_at = time_from_epoch(f[1]),
-            .authority = hex_decode(f[2]),
+            .authority = authority,
+            .epistemic_class = epistemic,
             .payload = EventExpressionRecorded{},
         };
 
-        const std::string& type = f[3];
-        if (type == "EXPR" && f.size() >= 6) {
+        if (type == "EXPR") {
+            if (f.size() < p + 2) throw std::runtime_error("malformed EXPR record at line " + std::to_string(line_no));
             record.payload = EventExpressionRecorded{
-                .id = number<std::uint64_t>(f[4]),
+                .id = number<std::uint64_t>(f[p]),
                 .timestamp = record.recorded_at,
-                .text = hex_decode(f[5]),
+                .text = hex_decode(f[p + 1]),
             };
-        } else if (type == "INT_DERIVED" && f.size() >= 12) {
+        } else if (type == "INT_DERIVED") {
+            if (f.size() < p + 8) throw std::runtime_error("malformed INT_DERIVED record at line " + std::to_string(line_no));
             record.payload = EventIntentionDerived{
-                .id = number<std::uint64_t>(f[4]),
-                .expression_id = number<std::uint64_t>(f[5]),
-                .subject = hex_decode(f[6]),
-                .window_start = time_from_epoch(f[7]),
-                .window_end = time_from_epoch(f[8]),
-                .precision = hex_decode(f[9]),
-                .authority = hex_decode(f[10]),
-                .interpretation_source = hex_decode(f[11]),
+                .id = number<std::uint64_t>(f[p]),
+                .expression_id = number<std::uint64_t>(f[p + 1]),
+                .subject = hex_decode(f[p + 2]),
+                .window_start = time_from_epoch(f[p + 3]),
+                .window_end = time_from_epoch(f[p + 4]),
+                .precision = hex_decode(f[p + 5]),
+                .authority = hex_decode(f[p + 6]),
+                .interpretation_source = hex_decode(f[p + 7]),
             };
-        } else if (type == "INT_STATUS" && f.size() >= 6) {
-            const auto st = intention_status_from_string(f[5]);
+        } else if (type == "INT_STATUS") {
+            if (f.size() < p + 3) throw std::runtime_error("malformed INT_STATUS record at line " + std::to_string(line_no));
+            const auto st = intention_status_from_string(f[p + 1]);
+            if (!st) throw std::runtime_error("invalid intention status in ledger at line " + std::to_string(line_no) + ": " + f[p + 1]);
             record.payload = EventIntentionStatusChanged{
-                .intention_id = number<std::uint64_t>(f[4]),
-                .new_status = st.value_or(IntentionStatus::open),
-                .reason = hex_decode(f[6]),
+                .intention_id = number<std::uint64_t>(f[p]),
+                .new_status = *st,
+                .reason = hex_decode(f[p + 2]),
                 .at = record.recorded_at,
             };
-        } else if (type == "INT_DEFERRED" && f.size() >= 8) {
+        } else if (type == "INT_DEFERRED") {
+            if (f.size() < p + 5) throw std::runtime_error("malformed INT_DEFERRED record at line " + std::to_string(line_no));
             record.payload = EventIntentionDeferred{
-                .intention_id = number<std::uint64_t>(f[4]),
-                .new_start = time_from_epoch(f[5]),
-                .new_end = time_from_epoch(f[6]),
-                .precision = hex_decode(f[7]),
-                .reason = hex_decode(f[8]),
+                .intention_id = number<std::uint64_t>(f[p]),
+                .new_start = time_from_epoch(f[p + 1]),
+                .new_end = time_from_epoch(f[p + 2]),
+                .precision = hex_decode(f[p + 3]),
+                .reason = hex_decode(f[p + 4]),
                 .at = record.recorded_at,
             };
-        } else if (type == "INTERACTION" && f.size() >= 10) {
+        } else if (type == "INTERACTION") {
+            if (f.size() < p + 6) throw std::runtime_error("malformed INTERACTION record at line " + std::to_string(line_no));
             record.payload = EventInteractionRecorded{
-                .id = number<std::uint64_t>(f[4]),
-                .intention_id = number<std::uint64_t>(f[5]),
+                .id = number<std::uint64_t>(f[p]),
+                .intention_id = number<std::uint64_t>(f[p + 1]),
                 .timestamp = record.recorded_at,
-                .message = hex_decode(f[6]),
-                .reason = hex_decode(f[7]),
-                .decision = hex_decode(f[8]),
-                .formulation_source = hex_decode(f[9]),
+                .message = hex_decode(f[p + 2]),
+                .reason = hex_decode(f[p + 3]),
+                .decision = hex_decode(f[p + 4]),
+                .formulation_source = hex_decode(f[p + 5]),
             };
-        } else if (type == "PLAN_PROP" && f.size() >= 10) {
+        } else if (type == "PLAN_PROP") {
+            if (f.size() < p + 6) throw std::runtime_error("malformed PLAN_PROP record at line " + std::to_string(line_no));
             record.payload = EventPlanProposed{
-                .id = number<std::uint64_t>(f[4]),
+                .id = number<std::uint64_t>(f[p]),
                 .created_at = record.recorded_at,
-                .horizon = hex_decode(f[5]),
-                .summary = hex_decode(f[6]),
-                .blocks = decode_blocks(hex_decode(f[7])),
-                .points_of_attention = decode_strings(hex_decode(f[8])),
-                .status = f[9],
-                .source = f.size() >= 11 ? hex_decode(f[10]) : "",
+                .horizon = hex_decode(f[p + 1]),
+                .summary = hex_decode(f[p + 2]),
+                .blocks = decode_blocks(hex_decode(f[p + 3])),
+                .points_of_attention = decode_strings(hex_decode(f[p + 4])),
+                .status = f[p + 5],
+                .source = f.size() >= p + 7 ? hex_decode(f[p + 6]) : "",
             };
-        } else if (type == "PLAN_APPL" && f.size() >= 6) {
+        } else if (type == "PLAN_APPL") {
+            if (f.size() < p + 2) throw std::runtime_error("malformed PLAN_APPL record at line " + std::to_string(line_no));
             record.payload = EventPlanApplied{
-                .plan_id = number<std::uint64_t>(f[4]),
+                .plan_id = number<std::uint64_t>(f[p]),
                 .applied_at = record.recorded_at,
-                .reason = hex_decode(f[5]),
+                .reason = hex_decode(f[p + 1]),
             };
-        } else if (type == "PLAN_DISC" && f.size() >= 6) {
+        } else if (type == "PLAN_DISC") {
+            if (f.size() < p + 2) throw std::runtime_error("malformed PLAN_DISC record at line " + std::to_string(line_no));
             record.payload = EventPlanDiscarded{
-                .plan_id = number<std::uint64_t>(f[4]),
+                .plan_id = number<std::uint64_t>(f[p]),
                 .discarded_at = record.recorded_at,
-                .reason = hex_decode(f[5]),
+                .reason = hex_decode(f[p + 1]),
             };
-        } else if (type == "AUTO_CREATE" && f.size() >= 11) {
+        } else if (type == "AUTO_CREATE") {
+            if (f.size() < p + 7) throw std::runtime_error("malformed AUTO_CREATE record at line " + std::to_string(line_no));
             record.payload = EventAutomationCreated{
-                .id = number<std::uint64_t>(f[4]),
+                .id = number<std::uint64_t>(f[p]),
                 .created_at = record.recorded_at,
-                .title = hex_decode(f[5]),
-                .trigger_when = hex_decode(f[6]),
-                .condition_if = hex_decode(f[7]),
-                .action_then = hex_decode(f[8]),
-                .authority = hex_decode(f[9]),
-                .status = f[10],
+                .title = hex_decode(f[p + 1]),
+                .trigger_when = hex_decode(f[p + 2]),
+                .condition_if = hex_decode(f[p + 3]),
+                .action_then = hex_decode(f[p + 4]),
+                .authority = hex_decode(f[p + 5]),
+                .status = f[p + 6],
             };
-        } else if (type == "AUTO_STATUS" && f.size() >= 7) {
+        } else if (type == "AUTO_STATUS") {
+            if (f.size() < p + 3) throw std::runtime_error("malformed AUTO_STATUS record at line " + std::to_string(line_no));
             record.payload = EventAutomationStatusChanged{
-                .automation_id = number<std::uint64_t>(f[4]),
-                .new_status = f[5],
-                .reason = hex_decode(f[6]),
+                .automation_id = number<std::uint64_t>(f[p]),
+                .new_status = f[p + 1],
+                .reason = hex_decode(f[p + 2]),
                 .at = record.recorded_at,
             };
-        } else if (type == "AUTO_TRIG" && f.size() >= 6) {
+        } else if (type == "AUTO_TRIG") {
+            if (f.size() < p + 2) throw std::runtime_error("malformed AUTO_TRIG record at line " + std::to_string(line_no));
             record.payload = EventAutomationTriggered{
-                .automation_id = number<std::uint64_t>(f[4]),
+                .automation_id = number<std::uint64_t>(f[p]),
                 .triggered_at = record.recorded_at,
-                .explanation = hex_decode(f[5]),
+                .explanation = hex_decode(f[p + 1]),
             };
-        } else if (type == "NOTIF_EMIT" && f.size() >= 10) {
+        } else if (type == "NOTIF_EMIT") {
+            if (f.size() < p + 6) throw std::runtime_error("malformed NOTIF_EMIT record at line " + std::to_string(line_no));
             std::optional<std::uint64_t> ref_id;
-            if (f[9] != "-") ref_id = number<std::uint64_t>(f[9]);
+            if (f[p + 5] != "-") ref_id = number<std::uint64_t>(f[p + 5]);
             record.payload = EventNotificationEmitted{
-                .id = number<std::uint64_t>(f[4]),
-                .automation_id = number<std::uint64_t>(f[5]),
+                .id = number<std::uint64_t>(f[p]),
+                .automation_id = number<std::uint64_t>(f[p + 1]),
                 .emitted_at = record.recorded_at,
-                .title = hex_decode(f[6]),
-                .message = hex_decode(f[7]),
-                .action_type = hex_decode(f[8]),
+                .title = hex_decode(f[p + 2]),
+                .message = hex_decode(f[p + 3]),
+                .action_type = hex_decode(f[p + 4]),
                 .reference_id = ref_id,
             };
+        } else {
+            throw std::runtime_error("unknown event type in ledger record at line " + std::to_string(line_no) + ": " + type);
         }
         records.push_back(std::move(record));
     }
@@ -578,6 +663,7 @@ State Ledger::project_state() const {
                     .id = event.id,
                     .recorded_at = event.timestamp,
                     .text = event.text,
+                    .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventIntentionDerived>) {
                 max_id = std::max(max_id, event.id);
@@ -592,6 +678,9 @@ State Ledger::project_state() const {
                     .interpretation_source = event.interpretation_source,
                     .status = IntentionStatus::open,
                     .last_interaction_at = std::nullopt,
+                    .epistemic_class = record.epistemic_class,
+                    .allocated_plan_start = std::nullopt,
+                    .allocated_plan_end = std::nullopt,
                 });
             } else if constexpr (std::is_same_v<T, EventIntentionStatusChanged>) {
                 auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
@@ -603,9 +692,14 @@ State Ledger::project_state() const {
                 auto it = std::find_if(state.intentions.begin(), state.intentions.end(),
                                        [&](const auto& item) { return item.id == event.intention_id; });
                 if (it != state.intentions.end()) {
-                    it->window_start = event.new_start;
-                    it->window_end = event.new_end;
-                    it->precision = event.precision;
+                    if (event.precision == "plan_slot") {
+                        it->allocated_plan_start = event.new_start;
+                        it->allocated_plan_end = event.new_end;
+                    } else {
+                        it->window_start = event.new_start;
+                        it->window_end = event.new_end;
+                        it->precision = event.precision;
+                    }
                     it->last_interaction_at.reset();
                 }
             } else if constexpr (std::is_same_v<T, EventInteractionRecorded>) {
@@ -623,6 +717,7 @@ State Ledger::project_state() const {
                     .reason = event.reason,
                     .decision = event.decision,
                     .formulation_source = event.formulation_source,
+                    .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventPlanProposed>) {
                 max_id = std::max(max_id, event.id);
@@ -635,6 +730,9 @@ State Ledger::project_state() const {
                     .points_of_attention = event.points_of_attention,
                     .status = event.status,
                     .source = event.source,
+                    .as_of_sequence = record.sequence_number,
+                    .basis_intentions_digest = "",
+                    .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
                 auto it = std::find_if(state.plan_proposals.begin(), state.plan_proposals.end(),
@@ -660,6 +758,7 @@ State Ledger::project_state() const {
                     .authority = event.authority,
                     .status = event.status,
                     .last_triggered_at = std::nullopt,
+                    .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventAutomationStatusChanged>) {
                 auto it = std::find_if(state.automation_proposals.begin(), state.automation_proposals.end(),
@@ -683,6 +782,7 @@ State Ledger::project_state() const {
                     .message = event.message,
                     .action_type = event.action_type,
                     .reference_id = event.reference_id,
+                    .epistemic_class = record.epistemic_class,
                 });
             }
         }, record.payload);

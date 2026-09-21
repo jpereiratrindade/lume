@@ -131,9 +131,10 @@ using EventPayload = std::variant<
 >;
 
 struct EventRecord {
-    std::uint64_t sequence_number{0}; // Assigned automatically by Ledger if 0
+    std::uint64_t sequence_number{0}; // Managed exclusively by Ledger
     TimePoint recorded_at{};
-    std::string authority{"user"}; // "user", "core", "inferred"
+    std::string authority{"user"}; // "user", "core", "inferred", "user_policy"
+    EpistemicClass epistemic_class{EpistemicClass::user_declared};
     EventPayload payload;
 };
 
@@ -145,6 +146,7 @@ public:
     FileLockGuard& operator=(FileLockGuard&& other) noexcept;
     FileLockGuard(const FileLockGuard&) = delete;
     FileLockGuard& operator=(const FileLockGuard&) = delete;
+    void release() noexcept;
 
 private:
     std::string lock_path_;

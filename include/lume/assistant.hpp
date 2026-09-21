@@ -34,8 +34,10 @@ public:
     Outcome toggle_automation(std::uint64_t automation_id, std::string_view new_status, TimePoint now);
     Outcome tick(TimePoint now);
 
+    [[nodiscard]] std::optional<AttentionCandidate> compute_attention_candidate(TimePoint now) const;
     [[nodiscard]] std::string explain_last() const;
     [[nodiscard]] std::string inspect() const;
+    [[nodiscard]] std::string inspect(TimePoint now) const;
     [[nodiscard]] std::string language_name() const;
     [[nodiscard]] const Ledger& ledger() const noexcept;
 

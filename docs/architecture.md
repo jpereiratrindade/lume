@@ -1,50 +1,78 @@
-# Fronteiras do Lume
+# Arquitetura e Fronteiras do Lume
+
+## 1. Visão Sistêmica
 
 ```text
-Pessoa
-  ↕
-LanguageProvider              linguagem, interpretação candidata, formulação
-  ↕ candidatos / texto
-Assistant (core)              validação, contexto, decisão, autoridade
-  ↕ entidades aceitas
-Store                         fatos, continuidade, proveniência, witness
+                       PESSOA
+                          ↕
+                  INTERAÇÃO NATURAL
+                          ↕
+                  LanguageProvider
+                          │
+                  candidatos / texto
+                          ↓
+                 ┌─────────────────┐
+                 │   LUME CORE     │
+                 │                 │
+                 │ contexto        │
+                 │ autoridade      │
+                 │ decisão         │
+                 │ planejamento    │
+                 │ relevância      │
+                 └────────┬────────┘
+                          │
+                       eventos
+                          ↓
+                 ┌─────────────────┐
+                 │ EVENT LEDGER    │
+                 │ append-only     │
+                 └────────┬────────┘
+                          │
+                       replay
+                          ↓
+                     PROJEÇÕES
+                    ↙    ↓    ↘
+                 CLI    WEB   lumed
 ```
 
-## Contrato de autoridade
+---
 
-`LanguageProvider::interpret` retorna `InterpretationCandidate`. Isso é uma
-proposta sem autoridade. O core aceita apenas tipos, restrições temporais e nível
-de confiança conhecidos. Propostas desconhecidas são rejeitadas; a expressão
-original continua preservada.
+## 2. Contratos Fortes de Fronteira
 
-O contexto entregue ao provedor é uma projeção mínima (`ContextProjection`), não
-o estado completo. Uma formulação vazia ou inválida pode ser substituída por texto
-determinístico do core.
+### 2.1. LanguageProvider (O Modelo Propõe; o Lume Decide)
+- **Schema Fechado e Loopback**: O provedor linguístico (ex: LLM local via `127.0.0.1`) é executado em loopback isolado e devolve candidatos estritos (`InterpretationCandidate`, `PlanProposalCandidate`, `FormulationResult`).
+- **Sem Acesso ao Estado**: O modelo nunca recebe referências mutáveis ao estado ou ao Ledger.
+- **Fallback Determinístico**: Circuit breaker ativo e fallback transparente para `DeterministicLanguage` em caso de timeout, falha ou violação de esquema.
+- **Proveniência Preservada**: Algoritmos e heurísticas registram suas fontes originais (`deterministic-planner`, `core-fallback`, etc.).
 
-## Estado factual
+### 2.2. Ledger Imutável e Integridade Concorrente
+- **Append-Only & Replay**: O estado canônico é derivado por replay determinístico da sequência ordenada de registros de eventos.
+- **Gestão Monotônica Exclusiva de Sequência**: O `Ledger` atribui números de sequência crescentes estritos. Callers nunca atribuem sequence numbers manuais.
+- **Concorrência Transacional e Multithread Safe**: Operações mutantes (`say`, `observe`, `reply`, `plan`, `apply_plan`, `discard_plan`, `tick`) executam sob transações atômicas `with_exclusive_lock`, com lock de arquivo e reentrância thread-safe com notificação entre threads (`condition_variable`).
+- **Rejeição Estrita (`REJECT`)**: Corrupções de linha, contagem incorreta de campos, tipos desconhecidos ou sequências fora de ordem disparam exceções imediatas, garantindo que o estado factual nunca seja fabricado.
+- **Permissões POSIX**: Diretórios criados com `0700` e arquivos/locks com `0600`.
 
-Cada intenção aponta para a expressão que a originou e registra:
+### 2.3. Matriz de Autoridade e Epistemologia
+- **Autoridade**: `user` (pessoa humana), `core` (motor deliberativo), `user_policy` (rotina autorizada).
+- **Epistemologia**: `user_declared` (literalidade da declaração), `derived` (inferência estruturada a partir de fato primário), `observed` (observação factual de ambiente/horário), `proposed` (rascunho de plano aguardando aprovação).
 
-- texto/assunto derivado;
-- janela temporal resolvida pelo core;
-- precisão;
-- autoridade (`user`);
-- origem da interpretação;
-- status e última interação.
+### 2.4. Planejamento Ontológico e Detecção de Obsoleto (Staleness)
+- **Preservação de Intenções**: Aplicar um plano aloca `allocated_plan_start/end` sem apagar a declaração temporal original do usuário.
+- **Não-Sobreposição**: Blocos alocados respeitam intervalos e nunca se sobrepõem no mesmo horizonte.
+- **Detecção de Staleness**: `PlanProposal` armazena `as_of_sequence` e `basis_intentions_digest`. Se o contexto das intenções mudar antes da aplicação, o sistema rejeita com `PLAN_STALE` e orienta a geração de uma nova proposta.
 
-Cada interação registra a razão factual e a origem da formulação. `lume inspect`
-expõe essa projeção em JSON; `lume why` explica a interação mais recente.
+### 2.5. Atenção Factual (Attention Engine)
+- Projeção factual computada pelo Core (`compute_attention_candidate`) baseada na janela ativa atual e ausência de interação recente.
+- A interface gráfica consome essa projeção factual sem heurísticas fictícias.
 
-## Provedor local
+---
 
-O adaptador OpenAI-compatible atende Ollama e `llama-server`. Ele:
+## 3. Experiência Humana em Três Profundidades
+1. **Presença (Agora)**: Foco presente, diálogo e atenção factual serena.
+2. **Orquestração (Planejar)**: Projeção de blocos estruturados e consentimento explícito (*"Usar este plano"*).
+3. **Exploração (Automatizar, Conectar, Analisar)**: Gestão de rotinas com autoridade, conexões factuais verificadas e evidências analíticas.
 
-1. recebe somente a expressão e a projeção mínima necessária;
-2. produz um candidato validado contra schema fechado;
-3. opera com prazo e circuit breaker;
-4. nunca recebe uma referência mutável ao `Store`;
-5. retorna ao `DeterministicLanguage` em falha, timeout ou saída inválida;
-6. aceita somente endpoints loopback.
+---
 
-Modelo, prompt e versão deverão integrar a proveniência. Trocar o modelo não muda
-a ontologia nem a autoridade do core.
+## 4. Daemon Residente (`lumed`)
+- Subcomando `lume daemon [--interval-sec N]` ou serviço residente para monitoramento contínuo do relógio local, avaliação de condições de disparo de automações (`tick`) e proatividade sem necessidade de interação manual.
