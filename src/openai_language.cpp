@@ -25,10 +25,10 @@ std::string environment(std::string_view key, std::string fallback = {}) {
 }
 
 long timeout_from_environment() {
-    const auto value = environment("LUME_LLM_TIMEOUT_MS", "60000");
-    long timeout = 60'000;
+    const auto value = environment("LUME_LLM_TIMEOUT_MS", "4000");
+    long timeout = 4'000;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), timeout);
-    if (error != std::errc{} || end != value.data() + value.size()) return 60'000;
+    if (error != std::errc{} || end != value.data() + value.size()) return 4'000;
     return std::clamp(timeout, 500L, 120'000L);
 }
 
