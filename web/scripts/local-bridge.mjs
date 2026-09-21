@@ -12,6 +12,7 @@ const port = parsePort(process.env.LUME_BRIDGE_PORT, 4141, true);
 const webPort = parsePort(process.env.LUME_WEB_PORT, 3000);
 const childEnvironment = { ...process.env };
 if (process.env.LUME_WEB_STATE_FILE) childEnvironment.LUME_STATE_FILE = process.env.LUME_WEB_STATE_FILE;
+if (!childEnvironment.LUME_LLM) childEnvironment.LUME_LLM = "deterministic";
 const allowedOrigins = new Set([
   `http://localhost:${webPort}`,
   `http://127.0.0.1:${webPort}`,
