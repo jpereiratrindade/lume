@@ -125,7 +125,13 @@ STATE=/tmp/lume-demo.ledger
 ./build/lume --state "$STATE" inspect
 ```
 
-A persistência do Lume opera sobre um **Event Ledger append-only imutável** (`LUME-LEDGER-001`), garantindo integridade causal, proveniência completa de cada decisão e capacidade de replay determinístico.
+A persistência do Lume opera sobre um **Event Ledger append-only** com validação estrita (`LUME-HARDENING-001`), locks reentrantes thread-safe, separação entre autoridade e classes epistêmicas ([LUME-BOOTSTRAP-001](docs/spec/LUME-BOOTSTRAP-001.md)), detecção de planos obsoletos e projeção factual em três profundidades ([LUME-EXPERIENCE-001](docs/spec/LUME-EXPERIENCE-001.md)).
+
+Para executar o monitoramento residente do relógio e disparos de automações:
+
+```bash
+./build/lume daemon --interval-sec 30
+```
 
 ## Limites honestos desta versão
 
