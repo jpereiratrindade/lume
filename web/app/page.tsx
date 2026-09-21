@@ -1202,39 +1202,46 @@ function Composer({
   onSend: (text: string) => Promise<void>;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }) {
-  const [text, setText] = useState("");
+  const localRef = useRef<HTMLTextAreaElement | null>(null);
+  const textarea = inputRef ?? localRef;
 
-  const handleSubmit = async (event?: FormEvent) => {
+  const handleSubmit = (event?: FormEvent) => {
     event?.preventDefault();
-    const trimmed = text.trim();
-    if (!trimmed || processing) return;
-    setText("");
-    await onSend(trimmed);
+    if (processing) return;
+    const el = textarea.current;
+    if (!el) return;
+    const trimmed = el.value.trim();
+    if (!trimmed) return;
+    el.value = "";
+    void onSend(trimmed);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void handleSubmit();
+      handleSubmit();
     }
   };
 
   return (
-    <form className="calm-composer" onSubmit={(event) => void handleSubmit(event)}>
+    <form className="calm-composer" onSubmit={handleSubmit}>
       <label className="sr-only" htmlFor="calm-thought">
         Diga o que mudou ou peça um plano
       </label>
       <textarea
-        ref={inputRef}
+        ref={textarea}
         id="calm-thought"
         rows={1}
-        value={text}
-        onChange={(event) => setText(event.target.value)}
+        defaultValue=""
         onKeyDown={handleKeyDown}
         placeholder="Pode falar do teu jeito, pedir um plano ou guardar um contexto…"
         disabled={processing}
+        spellCheck={false}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
       />
-      <button type="submit" aria-label="Enviar" disabled={!text.trim() || processing}>
+      <button type="submit" aria-label="Enviar" disabled={processing}>
         <span aria-hidden="true">↑</span>
       </button>
     </form>
