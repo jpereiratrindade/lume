@@ -856,15 +856,20 @@ Outcome Assistant::trigger_automation(std::uint64_t automation_id, TimePoint now
         });
 
         if (auto_item.action_then == "propose_daily_plan") {
+            const auto records = ledger_.read_all();
+            const std::uint64_t current_seq = records.empty() ? 0 : records.back().sequence_number;
+
             std::vector<Intention> open_items;
             for (const auto& item : state.intentions) {
                 if (item.status == IntentionStatus::open) open_items.push_back(item);
             }
+            const std::string digest = compute_intentions_digest(open_items);
+
             auto candidate = language_->propose_plan(PlanRequest{
                 .utterance = "Organizar rotina matinal",
                 .horizon = "morning",
                 .reference_time = now,
-                .open_intentions = std::move(open_items),
+                .open_intentions = open_items,
             });
 
             PlanProposal proposal{
@@ -876,8 +881,8 @@ Outcome Assistant::trigger_automation(std::uint64_t automation_id, TimePoint now
                 .points_of_attention = std::move(candidate.points_of_attention),
                 .status = "draft",
                 .source = "automation:" + std::to_string(auto_item.id),
-                .as_of_sequence = 0,
-                .basis_intentions_digest = "",
+                .as_of_sequence = current_seq,
+                .basis_intentions_digest = digest,
             };
 
             batch.push_back(EventRecord{
@@ -1067,15 +1072,20 @@ Outcome Assistant::tick(TimePoint now) {
                 });
 
                 if (auto_item.action_then == "propose_daily_plan") {
+                    const auto records = ledger_.read_all();
+                    const std::uint64_t current_seq = records.empty() ? 0 : records.back().sequence_number;
+
                     std::vector<Intention> open_items;
                     for (const auto& item : state.intentions) {
                         if (item.status == IntentionStatus::open) open_items.push_back(item);
                     }
+                    const std::string digest = compute_intentions_digest(open_items);
+
                     auto candidate = language_->propose_plan(PlanRequest{
                         .utterance = "Organizar manhã",
                         .horizon = "morning",
                         .reference_time = now,
-                        .open_intentions = std::move(open_items),
+                        .open_intentions = open_items,
                     });
 
                     PlanProposal proposal{
@@ -1087,8 +1097,8 @@ Outcome Assistant::tick(TimePoint now) {
                         .points_of_attention = std::move(candidate.points_of_attention),
                         .status = "draft",
                         .source = "automation:" + std::to_string(auto_item.id),
-                        .as_of_sequence = 0,
-                        .basis_intentions_digest = "",
+                        .as_of_sequence = current_seq,
+                        .basis_intentions_digest = digest,
                     };
 
                     batch.push_back(EventRecord{
