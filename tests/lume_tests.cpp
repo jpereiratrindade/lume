@@ -609,6 +609,73 @@ void plan_staleness_multi_intention_divergence_test(const std::filesystem::path&
            "plan application must be rejected as stale when underlying context diverged");
 }
 
+void automation_staleness_and_digest_qualification_test(const std::filesystem::path& path) {
+    lume::Ledger ledger{path};
+    lume::Assistant assistant{ledger, lume::make_deterministic_language()};
+
+    // Set up open intentions
+    assistant.create_intention("Estudar C++26", at("2026-09-21T09:00:00"), at("2026-09-21T11:00:00"), at("2026-09-21T07:00:00"));
+    assistant.create_intention("Escrever artigo", at("2026-09-21T11:30:00"), at("2026-09-21T13:00:00"), at("2026-09-21T07:01:00"));
+
+    // Set up automation
+    const auto auto_res = assistant.create_automation(
+        "Rotina Matinal",
+        "daily_at:07:30",
+        "has_open_intentions",
+        "propose_daily_plan",
+        "prepare_proposal",
+        at("2026-09-21T07:02:00")
+    );
+    expect(auto_res.automation_proposal.has_value(), "automation creation must succeed");
+    const auto auto_id = auto_res.automation_proposal->id;
+
+    // 1. trigger_automation generates a non-empty basis_intentions_digest & valid as_of_sequence
+    const auto seq_before_trigger = assistant.ledger().read_all().size();
+    const auto trig_res = assistant.trigger_automation(auto_id, at("2026-09-21T07:15:00"));
+    expect(trig_res.plan_proposal.has_value(), "manual trigger must create plan proposal");
+    const auto trig_plan = *trig_res.plan_proposal;
+    expect(!trig_plan.basis_intentions_digest.empty(), "trigger_automation must generate non-empty basis_intentions_digest");
+    expect(trig_plan.basis_intentions_digest.find("Estudar C++26") != std::string::npos, "digest must contain open intentions");
+    expect(trig_plan.as_of_sequence == seq_before_trigger, "as_of_sequence must match sequence before trigger batch");
+
+    // 2. tick generates a non-empty basis_intentions_digest & valid as_of_sequence
+    const auto seq_before_tick = assistant.ledger().read_all().size();
+    const auto tick_res = assistant.tick(at("2026-09-22T07:30:00"));
+    auto state = assistant.ledger().project_state();
+    expect(!state.plan_proposals.empty(), "tick must produce plan proposals");
+    const auto tick_plan = state.plan_proposals.back();
+    expect(!tick_plan.basis_intentions_digest.empty(), "tick proposal must generate non-empty basis_intentions_digest");
+    expect(tick_plan.as_of_sequence == seq_before_tick, "tick as_of_sequence must match sequence before tick batch");
+
+    // 3. Intention added after proposal -> PLAN_STALE on application of trig_plan
+    assistant.say("Amanhã de manhã quero fazer caminhada.", at("2026-09-22T07:31:00"));
+    const auto apply_stale_new = assistant.apply_plan(trig_plan.id, at("2026-09-22T07:32:00"));
+    expect(apply_stale_new.decision == "PLAN_STALE", "adding new intention must invalidate prior proposal as PLAN_STALE");
+
+    // 4. Intention completed/deleted -> PLAN_STALE on application of tick_plan
+    const auto int_to_complete = state.intentions.front().id;
+    assistant.update_intention_status(int_to_complete, lume::IntentionStatus::completed, "adiantado", at("2026-09-22T07:33:00"));
+    const auto apply_stale_mod = assistant.apply_plan(tick_plan.id, at("2026-09-22T07:34:00"));
+    expect(apply_stale_mod.decision == "PLAN_STALE", "completing intention must invalidate prior proposal as PLAN_STALE");
+
+    // 5. Unaltered state -> application permitted
+    const auto fresh_plan_res = assistant.plan("Organiza minha manhã", at("2026-09-22T07:35:00"));
+    expect(fresh_plan_res.plan_proposal.has_value(), "fresh plan must be proposed");
+    const auto fresh_plan_id = fresh_plan_res.plan_proposal->id;
+    const auto apply_ok = assistant.apply_plan(fresh_plan_id, at("2026-09-22T07:36:00"));
+    expect(apply_ok.decision == "PLAN_APPLIED", "unaltered intention context must allow plan application");
+
+    // 6. Persistence & Replay integrity: reopening ledger from disk preserves basis_intentions_digest and as_of_sequence
+    lume::Assistant reloaded{lume::Ledger{path}, lume::make_deterministic_language()};
+    const auto reloaded_state = reloaded.ledger().project_state();
+    const auto reloaded_proposals = reloaded_state.plan_proposals;
+    expect(!reloaded_proposals.empty(), "reloaded ledger must have plan proposals");
+    for (const auto& prop : reloaded_proposals) {
+        expect(!prop.basis_intentions_digest.empty(), "reloaded plan proposal must preserve non-empty digest");
+        expect(prop.as_of_sequence > 0, "reloaded plan proposal must preserve valid as_of_sequence");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -643,6 +710,7 @@ int main() {
         tick_eod_review_test(base / "auto-tick-eod.state");
         multithread_concurrency_stress_test(base / "multithread-stress.state");
         plan_staleness_multi_intention_divergence_test(base / "stale-multi.state");
+        automation_staleness_and_digest_qualification_test(base / "auto-staleness-qual.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;
