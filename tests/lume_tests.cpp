@@ -630,7 +630,9 @@ void automation_staleness_and_digest_qualification_test(const std::filesystem::p
     const auto auto_id = auto_res.automation_proposal->id;
 
     // 1. trigger_automation generates a non-empty basis_intentions_digest & valid as_of_sequence
-    const auto seq_before_trigger = assistant.ledger().read_all().size();
+    const auto records_before_trigger = assistant.ledger().read_all();
+    const std::uint64_t seq_before_trigger = records_before_trigger.empty()
+        ? 0 : records_before_trigger.back().sequence_number;
     const auto trig_res = assistant.trigger_automation(auto_id, at("2026-09-21T07:15:00"));
     expect(trig_res.plan_proposal.has_value(), "manual trigger must create plan proposal");
     const auto trig_plan = *trig_res.plan_proposal;
@@ -639,11 +641,19 @@ void automation_staleness_and_digest_qualification_test(const std::filesystem::p
     expect(trig_plan.as_of_sequence == seq_before_trigger, "as_of_sequence must match sequence before trigger batch");
 
     // 2. tick generates a non-empty basis_intentions_digest & valid as_of_sequence
-    const auto seq_before_tick = assistant.ledger().read_all().size();
+    const auto state_before_tick = assistant.ledger().project_state();
+    const auto proposal_count_before_tick = state_before_tick.plan_proposals.size();
+    const auto records_before_tick = assistant.ledger().read_all();
+    const std::uint64_t seq_before_tick = records_before_tick.empty()
+        ? 0 : records_before_tick.back().sequence_number;
     const auto tick_res = assistant.tick(at("2026-09-22T07:30:00"));
     auto state = assistant.ledger().project_state();
-    expect(!state.plan_proposals.empty(), "tick must produce plan proposals");
+    expect(tick_res.changed, "tick must report a state change when automation triggers");
+    expect(state.plan_proposals.size() == proposal_count_before_tick + 1,
+           "tick must append exactly one plan proposal");
     const auto tick_plan = state.plan_proposals.back();
+    expect(tick_plan.source == "automation:" + std::to_string(auto_id),
+           "tick proposal must identify its automation source");
     expect(!tick_plan.basis_intentions_digest.empty(), "tick proposal must generate non-empty basis_intentions_digest");
     expect(tick_plan.as_of_sequence == seq_before_tick, "tick as_of_sequence must match sequence before tick batch");
 
