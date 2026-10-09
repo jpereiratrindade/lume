@@ -6,7 +6,7 @@ option(LUME_BUILD_TESTS "Build Lume's tests" ON)
 option(LUME_WITH_LOCAL_LLM "Enable local OpenAI-compatible LLM integration" ON)
 
 find_package(SQLite3 REQUIRED)
-find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
+find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp REQUIRED)
 
 add_library(lume_core
     src/assistant.cpp
@@ -14,7 +14,7 @@ add_library(lume_core
     src/ledger.cpp
     src/store.cpp
 )
-target_include_directories(lume_core PUBLIC include ${NLOHMANN_JSON_INCLUDE_DIR})
+target_include_directories(lume_core PUBLIC include PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 target_compile_features(lume_core PUBLIC cxx_std_26)
 target_compile_options(lume_core PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
@@ -29,7 +29,7 @@ if(LUME_WITH_LOCAL_LLM)
         target_compile_definitions(lume_core PRIVATE LUME_HAS_LOCAL_LLM=1)
         message(STATUS "Lume local LLM integration: enabled")
     else()
-        message(WARNING "libcurl or nlohmann/json.hpp not found; using deterministic language only")
+        message(WARNING "libcurl not found; using deterministic language only")
     endif()
 endif()
 
