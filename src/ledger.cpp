@@ -301,6 +301,8 @@ std::pair<std::string, std::string> serialize_payload(const EventPayload& payloa
                 {"points_of_attention", event.points_of_attention},
                 {"status", event.status},
                 {"source", event.source},
+                {"as_of_sequence", event.as_of_sequence},
+                {"basis_intentions_digest", event.basis_intentions_digest},
             };
             return {"PLAN_PROPOSED", j.dump()};
         } else if constexpr (std::is_same_v<T, EventPlanApplied>) {
@@ -465,6 +467,8 @@ EventPayload deserialize_payload(std::string_view type, const std::string& json_
             .points_of_attention = std::move(attention),
             .status = j.at("status").get<std::string>(),
             .source = j.at("source").get<std::string>(),
+            .as_of_sequence = j.value("as_of_sequence", std::uint64_t{0}),
+            .basis_intentions_digest = j.value("basis_intentions_digest", std::string{}),
         };
     }
     if (type == "PLAN_APPLIED") {
@@ -1008,8 +1012,8 @@ State Ledger::project_state() const {
                     .points_of_attention = event.points_of_attention,
                     .status = event.status,
                     .source = event.source,
-                    .as_of_sequence = record.sequence_number,
-                    .basis_intentions_digest = "",
+                    .as_of_sequence = event.as_of_sequence > 0 ? event.as_of_sequence : record.sequence_number,
+                    .basis_intentions_digest = event.basis_intentions_digest,
                     .epistemic_class = record.epistemic_class,
                 });
             } else if constexpr (std::is_same_v<T, EventPlanApplied>) {

@@ -7,7 +7,9 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -552,6 +554,61 @@ void intention_crud_lifecycle_test(const std::filesystem::path& path) {
     expect(assistant.ledger().read_all().size() == 7, "CRUD history must remain auditable");
 }
 
+void multithread_concurrency_stress_test(const std::filesystem::path& path) {
+    constexpr int num_threads = 6;
+    constexpr int ops_per_thread = 20;
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (int t = 0; t < num_threads; ++t) {
+        threads.emplace_back([path, t]() {
+            lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
+            for (int i = 0; i < ops_per_thread; ++i) {
+                std::string subject = "Thread " + std::to_string(t) + " Task " + std::to_string(i);
+                auto res = assistant.create_intention(
+                    subject,
+                    at("2026-09-21T09:00:00"),
+                    at("2026-09-21T11:00:00"),
+                    at("2026-09-21T08:00:00")
+                );
+                expect(res.decision == "INTENTION_CREATED", "concurrent creation must succeed");
+            }
+        });
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+
+    lume::Ledger ledger{path};
+    const auto events = ledger.read_all();
+    expect(events.size() == static_cast<std::size_t>(num_threads * ops_per_thread * 2),
+           "all concurrent events must be persisted");
+
+    for (std::size_t idx = 0; idx < events.size(); ++idx) {
+        expect(events[idx].sequence_number == static_cast<std::uint64_t>(idx + 1),
+               "sequence numbers must be strictly monotonic without gaps or duplicates");
+    }
+}
+
+void plan_staleness_multi_intention_divergence_test(const std::filesystem::path& path) {
+    lume::Assistant assistant{lume::Ledger{path}, lume::make_deterministic_language()};
+    assistant.say("Amanhã de manhã quero escrever o relatório.", at("2026-09-21T18:00:00"));
+    assistant.say("Amanhã de manhã quero revisar o código.", at("2026-09-21T18:01:00"));
+
+    const auto proposal = assistant.plan("Organiza minha manhã", at("2026-09-21T18:02:00"));
+    expect(proposal.plan_proposal.has_value(), "plan proposal must be created");
+    const auto plan_id = proposal.plan_proposal->id;
+
+    // Mutate state before applying proposal: add a conflicting intention
+    assistant.say("Amanhã de manhã quero fazer reunião de equipe.", at("2026-09-21T18:03:00"));
+
+    const auto apply_res = assistant.apply_plan(plan_id, at("2026-09-21T18:04:00"));
+    expect(apply_res.decision == "PLAN_STALE",
+           "plan application must be rejected as stale when underlying context diverged");
+}
+
 }  // namespace
 
 int main() {
@@ -584,6 +641,8 @@ int main() {
         tick_evaluation_morning_plan_test(base / "auto-tick-morning.state");
         tick_evaluation_no_duplicate_triggers_test(base / "auto-tick-dedup.state");
         tick_eod_review_test(base / "auto-tick-eod.state");
+        multithread_concurrency_stress_test(base / "multithread-stress.state");
+        plan_staleness_multi_intention_divergence_test(base / "stale-multi.state");
         std::filesystem::remove_all(base);
         std::cout << "all tests passed\n";
         return 0;

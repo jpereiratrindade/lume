@@ -335,6 +335,8 @@ Outcome Assistant::plan(std::string_view horizon_or_request, TimePoint now) {
                 .points_of_attention = proposal.points_of_attention,
                 .status = proposal.status,
                 .source = proposal.source,
+                .as_of_sequence = proposal.as_of_sequence,
+                .basis_intentions_digest = proposal.basis_intentions_digest,
             },
         });
 
@@ -376,6 +378,17 @@ Outcome Assistant::apply_plan(std::uint64_t plan_id, TimePoint now) {
                 if (intention_it == state.intentions.end() || intention_it->status != IntentionStatus::open) {
                     return {"PLAN_STALE", "O contexto mudou desde a criação deste plano. Prepare um novo.", "itens foram modificados ou concluídos", false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
                 }
+            }
+        }
+
+        if (!it->basis_intentions_digest.empty()) {
+            std::vector<Intention> current_open;
+            for (const auto& item : state.intentions) {
+                if (item.status == IntentionStatus::open) current_open.push_back(item);
+            }
+            const std::string current_digest = compute_intentions_digest(current_open);
+            if (current_digest != it->basis_intentions_digest) {
+                return {"PLAN_STALE", "O contexto das intenções mudou desde a criação deste plano. Prepare um novo.", "divergência no digest de intenções abertas", false, "text", std::nullopt, std::nullopt, {}, compute_attention_candidate(now)};
             }
         }
 
@@ -881,6 +894,8 @@ Outcome Assistant::trigger_automation(std::uint64_t automation_id, TimePoint now
                     .points_of_attention = proposal.points_of_attention,
                     .status = proposal.status,
                     .source = proposal.source,
+                    .as_of_sequence = proposal.as_of_sequence,
+                    .basis_intentions_digest = proposal.basis_intentions_digest,
                 },
             });
 
@@ -1090,6 +1105,8 @@ Outcome Assistant::tick(TimePoint now) {
                             .points_of_attention = proposal.points_of_attention,
                             .status = proposal.status,
                             .source = proposal.source,
+                            .as_of_sequence = proposal.as_of_sequence,
+                            .basis_intentions_digest = proposal.basis_intentions_digest,
                         },
                     });
 

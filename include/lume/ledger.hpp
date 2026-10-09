@@ -93,6 +93,8 @@ struct EventPlanProposed {
     std::vector<std::string> points_of_attention;
     std::string status{"draft"}; // draft, applied, discarded
     std::string source;
+    std::uint64_t as_of_sequence{0};
+    std::string basis_intentions_digest;
 };
 
 struct EventPlanApplied {
