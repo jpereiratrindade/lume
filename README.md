@@ -140,3 +140,9 @@ O fallback reconhece expressões explícitas como “amanhã de manhã quero …
 ## Licença
 
 O Lume é distribuído sob a [GNU General Public License v3.0](LICENSE), exclusivamente na versão 3 (`GPL-3.0-only`).
+
+## Premissas de desenvolvimento
+
+**Simples, leve. Sempre pronto. Sempre incompleto!**
+
+[Significado e símbolos das premissas](docs/sister-principles/README.md).
